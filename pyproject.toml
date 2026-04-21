@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aind-code-ocean-pipeline-utils"
-description = "Utilities to for use in code ocean pipelines"
+description = "Utilities for use in Code Ocean pipelines"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
@@ -36,6 +36,7 @@ dev = [
     "ruff",
     "interrogate",
     "rich>=13",
+    "commitizen>=4.13.10",
 ]
 jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]
 
