@@ -1,4 +1,4 @@
-"""Utilities to for use in code ocean pipelines"""
+"""Utilities for use in Code Ocean pipelines."""
 
 from importlib.metadata import PackageNotFoundError, version
 
