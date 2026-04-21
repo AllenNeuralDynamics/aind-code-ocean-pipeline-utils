@@ -1,0 +1,26 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: 0.1.15
+_src_path: /home/galen.lynch/Documents/Code/aind-python-copier-template
+author_email: galen@galenlynch.com
+author_fullname: Galen Lynch
+auto_setup_repo: true
+current_year: '2026'
+github_org: AllenNeuralDynamics
+github_url: https://github.com/AllenNeuralDynamics/aind-code-ocean-pipeline-utils
+include_claude_md: true
+include_cli: false
+include_commitizen: true
+include_docs: false
+include_notebooks: false
+include_type_hints: true
+institute_name: Allen Institute for Neural Dynamics
+license: MIT
+project_description: Utilities to for use in code ocean pipelines
+project_name: AIND Code Ocean pipeline utils
+project_slug: aind-code-ocean-pipeline-utils
+publish_to_pypi: false
+python_package_import_name: aind_code_ocean_pipeline_utils
+python_version: '3.11'
+target_python_version: '3.13'
+workflow_source: AllenNeuralDynamics/galen-uv-workflows
+workflow_version: v2
