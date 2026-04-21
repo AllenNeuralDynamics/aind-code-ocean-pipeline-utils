@@ -36,7 +36,9 @@ pip install aind-code-ocean-pipeline-utils[rich]
 | `threading_utils` | ThreadPoolExecutor submit that propagates `contextvars`          | stdlib      |
 | `role_dispatch`   | Launcher / worker / aggregator skeleton for CO pipeline capsules | stdlib      |
 | `diagnostics`     | `/data` tree + RSS/cgroup reporting for post-mortem debugging    | stdlib      |
-| `log`             | Rich logging that doesn't get clobbered by Progress/Live ticks   | `[rich]`    |
+| `provenance`      | `capsule_commit()` + `package_version()` for manifest stamping   | stdlib      |
+| `cli`             | `parse_truthy()` for CO app-panel string parameters              | stdlib      |
+| `log`             | Rich logging + `build_progress` / `make_progress_callback`       | `[rich]`    |
 
 Core primitives are re-exported at the package level:
 
@@ -50,6 +52,8 @@ from aind_code_ocean_pipeline_utils import (
     write_stream_configs, find_stream_config,
     find_worker_manifests, find_launcher_manifest, merge_manifests,
     log_data_tree, start_memory_reporter,
+    capsule_commit, package_version,
+    parse_truthy,
 )
 ```
 
@@ -201,6 +205,40 @@ the only signal that survives an OOM SIGKILL (no `except` block runs;
 stdout isn't flushed) — enough to distinguish OOM from spot reclamation
 from application errors in postmortems.
 
+## `provenance` — manifest stamping
+
+```python
+from aind_code_ocean_pipeline_utils import capsule_commit, package_version
+
+manifest = {
+    "capsule_commit": capsule_commit(),      # env var, then `git rev-parse HEAD`
+    "package_version": package_version("my-package"),
+    # ... pipeline output ...
+}
+```
+
+`capsule_commit` checks `CO_COMMIT` / `GIT_COMMIT` / `COMMIT_ID` env
+vars in order, then falls back to `git -C /code rev-parse HEAD`.
+Returns the full 40-character hash or `None` — never raises, so
+manifest-emit paths can stamp unconditionally. `package_version` is a
+thin wrapper over `importlib.metadata.version` that returns `None` on
+`PackageNotFoundError`.
+
+## `cli` — app-panel parameter parsing
+
+```python
+from aind_code_ocean_pipeline_utils import parse_truthy
+
+disable_fast_filter = parse_truthy(args.disable_fast_filter)
+```
+
+Code Ocean's app panel passes parameters as strings when
+`named_parameters: true`, so bool flags (argparse `store_true`, tyro
+`--flag`/`--no-flag`) don't round-trip. `parse_truthy` accepts
+`{"true","yes","y","t"}` (case-insensitive) and any numeric string
+whose value is non-zero (`"1"`, `"42"`, `"3.14"`). Everything else
+— including `"0"`, `"0.0"`, `"false"`, and the empty string — is `False`.
+
 ## `log` — rich-aware logging (optional `[rich]` extra)
 
 `rich.progress.Progress` repaints its live area 2–10 times per second.
@@ -221,6 +259,31 @@ with Progress(console=console) as progress:   # same console!
 
 Pass the returned `Console` to any `Progress` / `Live` instance in the
 process. A separate `Console` reintroduces the bug.
+
+### Two-row progress helper
+
+`build_progress` sets up the common pattern of an overall-item counter
+plus a per-item progress bar, reusing the `Console` installed above so
+log output and progress ticks don't fight:
+
+```python
+from aind_code_ocean_pipeline_utils.log import (
+    build_progress, install_rich_handler, make_progress_callback,
+)
+
+install_rich_handler()   # must come first
+
+with build_progress(len(items)) as (progress, overall, item):
+    for it in items:
+        progress.reset(item, total=it.size, description=it.name, visible=True)
+        cb = make_progress_callback(progress, item)
+        do_work(it, on_progress=cb)
+        progress.advance(overall)
+```
+
+`build_progress` raises `RuntimeError` if `install_rich_handler` hasn't
+been called (unless you pass `console=` explicitly) — keeps the
+shared-`Console` invariant honest.
 
 ## Development
 

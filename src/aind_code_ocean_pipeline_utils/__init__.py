@@ -10,6 +10,7 @@ explicitly::
 from importlib.metadata import PackageNotFoundError, version
 
 from .cache import canonical_params, input_fingerprint
+from .cli import parse_truthy
 from .diagnostics import MemoryReporter, log_data_tree, start_memory_reporter
 from .io import (
     TRANSIENT_ERRNOS,
@@ -25,6 +26,7 @@ from .process import (
     reset_shutdown_state,
     shutdown_handler,
 )
+from .provenance import capsule_commit, package_version
 from .role_dispatch import (
     Role,
     StreamConfigError,
@@ -52,6 +54,7 @@ __all__ = [
     "atomic_json_write",
     "atomic_write_text",
     "canonical_params",
+    "capsule_commit",
     "check_shutdown",
     "default_sanitize",
     "find_launcher_manifest",
@@ -62,6 +65,8 @@ __all__ = [
     "is_shutdown_requested",
     "log_data_tree",
     "merge_manifests",
+    "package_version",
+    "parse_truthy",
     "reset_shutdown_state",
     "retry_on_oserror",
     "shutdown_handler",
