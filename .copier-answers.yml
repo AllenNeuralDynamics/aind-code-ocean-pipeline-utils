@@ -15,7 +15,7 @@ include_notebooks: false
 include_type_hints: true
 institute_name: Allen Institute for Neural Dynamics
 license: MIT
-project_description: Utilities to for use in code ocean pipelines
+project_description: Utilities for use in Code Ocean pipelines
 project_name: AIND Code Ocean pipeline utils
 project_slug: aind-code-ocean-pipeline-utils
 publish_to_pypi: false
