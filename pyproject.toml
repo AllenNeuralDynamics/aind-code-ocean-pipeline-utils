@@ -18,6 +18,9 @@ version = "0.1.0"
 dependencies = [
 ]
 
+[project.optional-dependencies]
+rich = ["rich>=13"]
+
 [project.urls]
 Repository = "https://github.com/AllenNeuralDynamics/aind-code-ocean-pipeline-utils/"
 Issues = "https://github.com/AllenNeuralDynamics/aind-code-ocean-pipeline-utils/issues"
@@ -25,7 +28,15 @@ Changelog = "https://github.com/AllenNeuralDynamics/aind-code-ocean-pipeline-uti
 
 [dependency-groups]
 types = ["mypy"]
-dev = [{ include-group = "types" }, "codespell", "pytest", "pytest-cov", "ruff", "interrogate"]
+dev = [
+    { include-group = "types" },
+    "codespell",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "interrogate",
+    "rich>=13",
+]
 jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]
 
 [tool.hatch.build.targets.wheel]
