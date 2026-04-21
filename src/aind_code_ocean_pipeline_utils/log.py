@@ -38,17 +38,32 @@ Requires the optional ``[rich]`` extra::
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 try:
     from rich.console import Console
     from rich.logging import RichHandler
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        SpinnerColumn,
+        TaskID,
+        TaskProgressColumn,
+        TextColumn,
+        TimeRemainingColumn,
+    )
 except ImportError as exc:  # pragma: no cover - tested via subprocess
     raise ImportError(
         "aind_code_ocean_pipeline_utils.log requires the [rich] extra. "
         "Install with: pip install aind-code-ocean-pipeline-utils[rich]"
     ) from exc
 
-__all__ = ["install_rich_handler"]
+__all__ = [
+    "build_progress",
+    "install_rich_handler",
+    "make_progress_callback",
+]
 
 _HANDLER_MARKER = "_aind_pipeline_utils_rich_handler"
 
@@ -116,3 +131,115 @@ def _remove_existing_handlers(logger: logging.Logger) -> None:
     to_remove = [h for h in logger.handlers if getattr(h, _HANDLER_MARKER, False)]
     for handler in to_remove:
         logger.removeHandler(handler)
+
+
+def _find_installed_console() -> Console:
+    """Return the :class:`Console` from the root logger's installed :class:`RichHandler`.
+
+    Raises :class:`RuntimeError` if :func:`install_rich_handler` has
+    not been called. The error message points the caller at the fix.
+    """
+    for handler in logging.getLogger().handlers:
+        if getattr(handler, _HANDLER_MARKER, False):
+            return handler.console  # type: ignore[attr-defined]
+    msg = (
+        "no rich handler found on the root logger; call install_rich_handler() "
+        "before build_progress(), or pass console= explicitly"
+    )
+    raise RuntimeError(msg)
+
+
+@contextmanager
+def build_progress(
+    total_items: int,
+    *,
+    console: Console | None = None,
+    refresh_per_second: float = 0.5,
+) -> Iterator[tuple[Progress, TaskID, TaskID]]:
+    """Two-row progress display: overall counter + per-item bar.
+
+    Yields ``(progress, overall_task, item_task)``. The overall task
+    tracks completed items out of ``total_items`` — the caller
+    advances it with ``progress.advance(overall_task)`` after each
+    item finishes. The item task is initially hidden; the caller
+    resets + retargets it per item::
+
+        with build_progress(len(items)) as (progress, overall, item):
+            for it in items:
+                progress.reset(item, total=it.size, description=it.name, visible=True)
+                do_work(it, on_progress=make_progress_callback(progress, item))
+                progress.advance(overall)
+
+    The :class:`Console` used for rendering must be the same one the
+    :class:`RichHandler` is writing to; otherwise log output gets
+    painted over. By default the :class:`Console` is discovered from
+    the installed handler, so callers who use
+    :func:`install_rich_handler` get correct behavior automatically.
+
+    Parameters
+    ----------
+    total_items : int
+        Expected number of items the caller will process.
+    console : rich.console.Console, optional
+        Explicit console override. If omitted, the module looks up
+        the :class:`Console` attached to the installed
+        :class:`RichHandler`.
+    refresh_per_second : float, default 0.5
+        Live-area refresh rate. Kept low by default because most
+        pipeline capsules have long per-item work and high-frequency
+        repaints burn CPU for no user benefit.
+
+    Yields
+    ------
+    tuple[rich.progress.Progress, rich.progress.TaskID, rich.progress.TaskID]
+        ``(progress, overall_task, item_task)``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``console`` is ``None`` and no rich handler has been
+        installed on the root logger.
+    """
+    resolved = console if console is not None else _find_installed_console()
+    columns = (
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+    )
+    with Progress(*columns, console=resolved, refresh_per_second=refresh_per_second) as progress:
+        overall_task = progress.add_task("overall", total=total_items)
+        item_task = progress.add_task("item", total=1, visible=False)
+        yield progress, overall_task, item_task
+
+
+def make_progress_callback(
+    progress: Progress,
+    task_id: TaskID,
+) -> Callable[[int, int], None]:
+    """Return a ``(processed, total) -> None`` callback that updates ``task_id``.
+
+    Matches the ``ProgressCallback`` shape several AIND processing
+    libraries expect (``build_mipmap(progress=...)`` and similar) so
+    consumers can pass the returned callable directly.
+
+    Parameters
+    ----------
+    progress : rich.progress.Progress
+        The Progress instance the task belongs to.
+    task_id : rich.progress.TaskID
+        Which task the callback should update.
+
+    Returns
+    -------
+    callable
+        Accepts ``(processed, total)`` and calls
+        :meth:`Progress.update` with ``completed=processed,
+        total=total``.
+    """
+
+    def _callback(processed: int, total: int) -> None:
+        progress.update(task_id, completed=processed, total=total)
+
+    return _callback

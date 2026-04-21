@@ -9,8 +9,13 @@ import pytest
 rich = pytest.importorskip("rich")
 from rich.console import Console  # noqa: E402
 from rich.logging import RichHandler  # noqa: E402
+from rich.progress import Progress  # noqa: E402
 
-from aind_code_ocean_pipeline_utils.log import install_rich_handler  # noqa: E402
+from aind_code_ocean_pipeline_utils.log import (  # noqa: E402
+    build_progress,
+    install_rich_handler,
+    make_progress_callback,
+)
 
 
 @pytest.fixture
@@ -83,10 +88,99 @@ def test_same_console_usable_with_progress(isolated_logger: logging.Logger):
     Guards the module's central contract: sharing the Console is what
     prevents Progress ticks from clobbering log output.
     """
-    from rich.progress import Progress
-
     console = install_rich_handler(isolated_logger)
     with Progress(console=console, transient=True) as progress:
         task = progress.add_task("x", total=1)
         progress.advance(task)
     # No assertion; the point is it must not raise.
+
+
+# -------------------------------------------------------------- build_progress --
+
+
+@pytest.fixture
+def _cleanup_root_logger():
+    root = logging.getLogger()
+    prior_handlers = list(root.handlers)
+    prior_level = root.level
+    yield
+    root.handlers = prior_handlers
+    root.setLevel(prior_level)
+
+
+def test_build_progress_yields_three_objects(_cleanup_root_logger):
+    install_rich_handler()
+    with build_progress(5) as (progress, overall, item):
+        assert isinstance(progress, Progress)
+        assert overall != item
+        # Overall task has total=5; item task starts hidden with total=1.
+        overall_task = progress.tasks[0]
+        item_task = progress.tasks[1]
+        assert overall_task.total == 5
+        assert item_task.visible is False
+
+
+def test_build_progress_requires_installed_handler_without_console():
+    # Clear root logger of any previously-installed handlers so the
+    # discovery path has nothing to find.
+    root = logging.getLogger()
+    prior = list(root.handlers)
+    root.handlers = [h for h in root.handlers if not getattr(h, "_aind_pipeline_utils_rich_handler", False)]
+    try:
+        with pytest.raises(RuntimeError, match="install_rich_handler"):
+            with build_progress(5):
+                pass
+    finally:
+        root.handlers = prior
+
+
+def test_build_progress_accepts_explicit_console_without_installed_handler():
+    root = logging.getLogger()
+    prior = list(root.handlers)
+    root.handlers = [h for h in root.handlers if not getattr(h, "_aind_pipeline_utils_rich_handler", False)]
+    try:
+        console = Console()
+        with build_progress(3, console=console) as (progress, _overall, _item):
+            assert progress.console is console
+    finally:
+        root.handlers = prior
+
+
+def test_build_progress_uses_installed_handler_console(_cleanup_root_logger):
+    shared = install_rich_handler()
+    with build_progress(2) as (progress, _overall, _item):
+        assert progress.console is shared
+
+
+def test_build_progress_overall_advances_independently(_cleanup_root_logger):
+    install_rich_handler()
+    with build_progress(3) as (progress, overall, _item):
+        progress.advance(overall)
+        progress.advance(overall)
+        assert progress.tasks[0].completed == 2
+
+
+# ----------------------------------------------------- make_progress_callback --
+
+
+def test_make_progress_callback_updates_task(_cleanup_root_logger):
+    install_rich_handler()
+    with build_progress(1) as (progress, _overall, item):
+        progress.reset(item, total=100, description="x", visible=True)
+        cb = make_progress_callback(progress, item)
+        cb(25, 100)
+        assert progress.tasks[1].completed == 25
+        cb(100, 100)
+        assert progress.tasks[1].completed == 100
+        assert progress.tasks[1].finished
+
+
+def test_make_progress_callback_updates_total_too(_cleanup_root_logger):
+    install_rich_handler()
+    with build_progress(1) as (progress, _overall, item):
+        cb = make_progress_callback(progress, item)
+        cb(5, 20)
+        assert progress.tasks[1].total == 20
+        cb(30, 50)  # total changed mid-stream (e.g. discovery revealed more work)
+        assert progress.tasks[1].total == 50
+        assert progress.tasks[1].completed == 30
