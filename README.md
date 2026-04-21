@@ -8,49 +8,178 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border.json)](https://github.com/copier-org/copier)
 
-Utilities to for use in code ocean pipelines
+Small, focused utilities for long-running AIND Code Ocean capsules. Each
+module addresses a single failure mode that recurs in pipeline code:
+sudden termination, flaky I/O, stale cache reuse, logging eaten by rich
+progress bars, and context variables lost across thread-pool submits.
+
+Core modules (`process`, `io`, `cache`, `threading_utils`) have **no
+runtime dependencies** beyond the standard library. The optional
+[`log`](#log--rich-aware-logging-optional-rich-extra) module requires
+the `[rich]` extra.
 
 ## Installation
 
-If you choose to clone the repository, you can install the package by running the following command from the root directory of the repository:
-
-```bash
-pip install .
-```
-
-Otherwise, you can use pip:
-
 ```bash
 pip install aind-code-ocean-pipeline-utils
+# with rich-aware logging
+pip install aind-code-ocean-pipeline-utils[rich]
 ```
 
+## Modules at a glance
 
+| Module            | Purpose                                                          | Deps        |
+|-------------------|------------------------------------------------------------------|-------------|
+| `process`         | Graceful SIGINT/SIGTERM handling with safe-point shutdown        | stdlib      |
+| `io`              | Retry on transient OS errors; atomic file writes                 | stdlib      |
+| `cache`           | Deterministic fingerprints for cache keys and resume validation  | stdlib      |
+| `threading_utils` | ThreadPoolExecutor submit that propagates `contextvars`          | stdlib      |
+| `log`             | Rich logging that doesn't get clobbered by Progress/Live ticks   | `[rich]`    |
 
-To develop the code, run:
-```bash
-uv sync
+Core primitives are re-exported at the package level:
+
+```python
+from aind_code_ocean_pipeline_utils import (
+    GracefulExit, check_shutdown, shutdown_handler,
+    retry_on_oserror, atomic_json_write, atomic_write_text,
+    input_fingerprint, canonical_params,
+    submit_with_context,
+)
 ```
+
+`log` must be imported from its submodule (keeps the top-level import
+stdlib-only):
+
+```python
+from aind_code_ocean_pipeline_utils.log import install_rich_handler
+```
+
+## `process` — graceful shutdown
+
+Main loops poll `check_shutdown()` at safe points (shard boundaries,
+between I/O operations) rather than aborting mid-kernel. The context
+manager translates a shutdown signal into `sys.exit(128 + signum)`,
+matching the Unix killed-by-signal convention (130 for SIGINT, 143 for
+SIGTERM).
+
+```python
+from aind_code_ocean_pipeline_utils import check_shutdown, shutdown_handler
+
+with shutdown_handler():
+    for shard in shards:
+        check_shutdown()   # raises GracefulExit on SIGINT/SIGTERM
+        process(shard)
+```
+
+`GracefulExit` inherits from `BaseException` — consumer code's broad
+`except Exception:` blocks cannot accidentally swallow it. A second
+signal of the same kind escalates via `os._exit` so a stuck cleanup
+path cannot block termination indefinitely.
+
+## `io` — retry and atomic writes
+
+```python
+from aind_code_ocean_pipeline_utils import (
+    retry_on_oserror, atomic_json_write, atomic_write_text, TRANSIENT_ERRNOS,
+)
+
+download = retry_on_oserror(_raw_download, retries=5)
+payload = download(url)
+
+atomic_json_write(out_path, payload)
+
+with atomic_write_text(log_path) as f:
+    f.write("...")
+```
+
+`retry_on_oserror` uses a deliberately narrow `TRANSIENT_ERRNOS` set
+(EIO, EAGAIN, EBUSY, network errnos). Permanent errors like `ENOENT`
+or `EACCES` surface immediately rather than hiding config mistakes
+behind minutes of exponential backoff. Callers with different failure
+models can union in additional codes at the call site.
+
+`atomic_write_text` writes to a sibling temp file, fsyncs, and uses
+`os.replace` for cross-platform atomic rename. The destination is
+never left half-written.
+
+## `cache` — input fingerprints
+
+```python
+from aind_code_ocean_pipeline_utils import input_fingerprint
+
+fp = input_fingerprint({"window": 0.01, "channels": [0, 1, 2]})
+# -> "sha256:3f1c..."
+```
+
+Equal inputs — regardless of key insertion order — produce equal
+fingerprints. The `sha256:` prefix leaves room to change the algorithm
+later without breaking consumers that string-compare fingerprints.
+
+Non-JSON values raise `TypeError` with a message identifying the
+offending key path. Callers coerce at the call site (`Path → str`,
+`ndarray → list` with a size ceiling) to keep fingerprints
+reproducible across Python versions.
+
+## `threading_utils` — contextvar propagation
+
+`ThreadPoolExecutor.submit(fn, ...)` runs `fn` on a worker with an
+*empty* context: any `ContextVar`-backed setting (`scipy.fft.set_workers`,
+`numpy.errstate`, custom request-ID / feature-flag vars) silently
+no-ops in the worker. `submit_with_context` copies the caller's
+context per submit so worker settings match the caller.
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from aind_code_ocean_pipeline_utils import submit_with_context
+
+with ThreadPoolExecutor() as pool:
+    future = submit_with_context(pool, worker, arg1, arg2)
+```
+
+The copy is per submit, not once and reused — `Context.run` raises
+`RuntimeError` if the same `Context` is active on two threads
+concurrently.
+
+## `log` — rich-aware logging (optional `[rich]` extra)
+
+`rich.progress.Progress` repaints its live area 2–10 times per second.
+If `logging` emits a record from inside a `with Progress():` block
+*without* going through rich, the next tick paints over the tail of
+the log output — the line that tells you *what* went wrong silently
+disappears. Sharing a single `Console` between the `RichHandler` and
+`Progress` serializes the two.
+
+```python
+from aind_code_ocean_pipeline_utils.log import install_rich_handler
+from rich.progress import Progress
+
+console = install_rich_handler()
+with Progress(console=console) as progress:   # same console!
+    ...
+```
+
+Pass the returned `Console` to any `Progress` / `Live` instance in the
+process. A separate `Console` reintroduces the bug.
 
 ## Development
 
-Please test your changes using the full linting and testing suite:
-
 ```bash
+# Set up environment
+uv sync
+
+# Run the full check suite
 ./scripts/run_linters_and_checks.sh -c
+
+# Individual tools
+uv run pytest
+uv run ruff format
+uv run ruff check
+uv run mypy
 ```
 
-Or run individual commands:
-```bash
-uv run --frozen ruff format          # Code formatting
-uv run --frozen ruff check           # Linting
-uv run --frozen mypy                 # Type checking
-uv run --frozen interrogate -v src   # Documentation coverage
-uv run --frozen codespell --check-filenames  # Spell checking
-uv run --frozen pytest --cov aind_code_ocean_pipeline_utils # Tests with coverage
-```
-
-
+See [`CLAUDE.md`](CLAUDE.md) for the design invariants each module is
+required to preserve.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
