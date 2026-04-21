@@ -34,6 +34,8 @@ pip install aind-code-ocean-pipeline-utils[rich]
 | `io`              | Retry on transient OS errors; atomic file writes                 | stdlib      |
 | `cache`           | Deterministic fingerprints for cache keys and resume validation  | stdlib      |
 | `threading_utils` | ThreadPoolExecutor submit that propagates `contextvars`          | stdlib      |
+| `role_dispatch`   | Launcher / worker / aggregator skeleton for CO pipeline capsules | stdlib      |
+| `diagnostics`     | `/data` tree + RSS/cgroup reporting for post-mortem debugging    | stdlib      |
 | `log`             | Rich logging that doesn't get clobbered by Progress/Live ticks   | `[rich]`    |
 
 Core primitives are re-exported at the package level:
@@ -44,6 +46,10 @@ from aind_code_ocean_pipeline_utils import (
     retry_on_oserror, atomic_json_write, atomic_write_text,
     input_fingerprint, canonical_params,
     submit_with_context,
+    Role, StreamConfigError,
+    write_stream_configs, find_stream_config,
+    find_worker_manifests, find_launcher_manifest, merge_manifests,
+    log_data_tree, start_memory_reporter,
 )
 ```
 
@@ -139,6 +145,61 @@ with ThreadPoolExecutor() as pool:
 The copy is per submit, not once and reused — `Context.run` raises
 `RuntimeError` if the same `Context` is active on two threads
 concurrently.
+
+## `role_dispatch` — launcher / worker / aggregator skeleton
+
+Most embarrassingly-parallel AIND processing capsules follow the same
+three-role shape: the launcher discovers items and writes one
+`config.json` per item under `/results/stream_<safe>/`; CO's Flatten
+fan-out stages each directory as a distinct worker input; the
+aggregator Collects and merges per-worker manifests.
+
+```python
+from aind_code_ocean_pipeline_utils import (
+    Role, StreamConfigError,
+    write_stream_configs, find_stream_config,
+    find_worker_manifests, find_launcher_manifest, merge_manifests,
+)
+
+MARKER = "_mycapsule_stream_config"
+
+# Launcher
+write_stream_configs(
+    items, results_dir=Path("/results"), schema_marker=MARKER,
+)
+
+# Worker — finds exactly one staged config anywhere under /data
+cfg_path, cfg = find_stream_config(Path("/data"), schema_marker=MARKER)
+
+# Aggregator
+workers = find_worker_manifests(Path("/data"))
+launcher = find_launcher_manifest(Path("/data"))
+merged = merge_manifests(m for _, m in workers)  # {"built": [...], "skipped": [...]}
+```
+
+Workers detect their config by a marker key in the JSON body, never by
+path shape — CO's Flatten + Target Map Path combinations produce
+unpredictable nesting. `find_stream_config` raises `StreamConfigError`
+(with `paths` attribute) on zero or ambiguous matches; both are
+terminal for the worker.
+
+## `diagnostics` — first-log-line mount and memory reporting
+
+```python
+from aind_code_ocean_pipeline_utils import log_data_tree, start_memory_reporter
+
+log_data_tree(Path("/data"))           # mount shape visible in log on startup
+reporter = start_memory_reporter()     # daemon thread, logs RSS + cgroup limit
+# ... worker runs ...
+reporter.stop()
+```
+
+`log_data_tree` uses `os.walk(followlinks=True)` so CO's staged symlink
+chains get traversed; depth is bounded so zarr chunk trees don't flood
+the log. `start_memory_reporter` logs peak approach-to-limit, which is
+the only signal that survives an OOM SIGKILL (no `except` block runs;
+stdout isn't flushed) — enough to distinguish OOM from spot reclamation
+from application errors in postmortems.
 
 ## `log` — rich-aware logging (optional `[rich]` extra)
 
