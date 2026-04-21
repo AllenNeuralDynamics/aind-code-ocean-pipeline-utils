@@ -82,5 +82,7 @@ These are load-bearing — every module has a subtle bug it exists to prevent. D
 
 ### Target consumers
 
-- `ecephys-mipmap-zarr` (AllenNeuralDynamics) — currently vendors all five patterns in `_engine.py` / `_fast_phase_shift.py`. Reference consumer for shaking out the v0.1 API.
+- `ecephys-mipmap-builder-capsule` (local path: `/home/galen.lynch/Documents/Code/ecephys-mipmap-builder-capsule`) — reference consumer for shaking out API friction. First migration target.
 - `pl-oversplitting-analysis-capsule` (ccg monorepo) — has none of the patterns; its `--merge-only` resume does a raw file-exists check with no fingerprint validation. Migration candidate after first bug report.
+
+Note: `ecephys-mipmap-zarr` is **not** a target — it is Code-Ocean-agnostic and should not depend on this package.
