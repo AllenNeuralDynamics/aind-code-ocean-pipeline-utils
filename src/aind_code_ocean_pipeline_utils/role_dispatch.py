@@ -42,7 +42,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -104,7 +104,7 @@ def default_sanitize(name: str) -> str:
 
 
 def write_stream_configs(
-    items: Iterable[Mapping[str, Any]],
+    items: Iterable[dict[str, Any]],
     *,
     results_dir: Path | str,
     schema_marker: str,
@@ -121,7 +121,7 @@ def write_stream_configs(
 
     Parameters
     ----------
-    items : Iterable[Mapping]
+    items : Iterable[dict]
         The work items. Each must contain ``name_key``.
     results_dir : Path or str
         Base directory, typically ``Path("/results")``. Created if missing.
@@ -176,7 +176,7 @@ def find_stream_config(
     schema_marker: str,
     filename: str = "config.json",
 ) -> tuple[Path, dict[str, Any]]:
-    """Worker side: locate exactly one schema-tagged config under ``data_dir``.
+    """Locate exactly one schema-tagged config under ``data_dir`` for workers.
 
     Walks ``data_dir`` with ``os.walk(followlinks=True)`` looking for
     files named ``filename`` whose JSON content is a dict carrying a
@@ -239,7 +239,7 @@ def find_worker_manifests(
     filename_suffix: str = ".json",
     strict: bool = False,
 ) -> list[tuple[Path, dict[str, Any]]]:
-    """Aggregator side: collect every worker manifest under ``data_dir``.
+    """Collect every worker manifest under ``data_dir`` for aggregator.
 
     Matches files whose basename starts with ``filename_prefix`` and
     ends with ``filename_suffix``. The default pattern (``manifest_*.json``)
@@ -294,8 +294,8 @@ def find_launcher_manifest(
     data_dir: Path | str,
     *,
     filename: str = "launcher_manifest.json",
-) -> Mapping[str, Any] | None:
-    """Aggregator side: locate the single launcher manifest, if any.
+) -> dict[str, Any] | None:
+    """Locate the single launcher manifest, if any, for aggregator.
 
     Parameters
     ----------
@@ -306,7 +306,7 @@ def find_launcher_manifest(
 
     Returns
     -------
-    Mapping[str, Any] or None
+    dict[str, Any] or None
         Parsed contents of the first match found, or None if no match.
         A warning is logged if more than one is present and the first
         walk-order result is returned — duplicate launcher manifests
@@ -315,23 +315,33 @@ def find_launcher_manifest(
     """
     base = Path(data_dir)
     matches: list[Path] = []
+
     for root, _dirs, files in os.walk(base, followlinks=True):
         if filename in files:
             matches.append(Path(root) / filename)
+
     if not matches:
         return None
+
     if len(matches) > 1:
         pretty = ", ".join(str(p) for p in matches)
         _logger.warning("multiple %s found (using first): %s", filename, pretty)
+
     try:
-        return json.loads(matches[0].read_text())
+        parsed = json.loads(matches[0].read_text())
     except (OSError, json.JSONDecodeError) as exc:
         _logger.warning("could not parse %s: %s", matches[0], exc)
         return None
 
+    if not isinstance(parsed, dict):
+        _logger.warning("expected %s to contain a JSON object, got %s", matches[0], type(parsed).__name__)
+        return None
+
+    return parsed
+
 
 def merge_manifests(
-    manifests: Iterable[Mapping[str, Any]],
+    manifests: Iterable[dict[str, Any]],
     *,
     result_key: str = "result",
     error_key: str = "error",
@@ -347,7 +357,7 @@ def merge_manifests(
 
     Parameters
     ----------
-    manifests : Iterable[Mapping]
+    manifests : Iterable[dict]
         Worker manifests as parsed. Pass the second element of each
         tuple from :func:`find_worker_manifests`.
     result_key : str, default "result"

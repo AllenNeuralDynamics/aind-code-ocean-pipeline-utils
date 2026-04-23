@@ -1,4 +1,4 @@
-"""Stamp capsule outputs with "what version of this code produced this."
+"""Stamp capsule outputs with "what version of this code produced this.".
 
 Two helpers that every capsule writing a manifest has been rewriting:
 one that consults Code Ocean's pipeline-level env vars with a local

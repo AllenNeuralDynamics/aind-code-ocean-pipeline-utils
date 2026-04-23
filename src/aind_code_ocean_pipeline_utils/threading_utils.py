@@ -45,8 +45,9 @@ Example
 from __future__ import annotations
 
 import contextvars
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 __all__ = ["submit_with_context"]
 
@@ -59,7 +60,7 @@ def submit_with_context(
     /,
     *args: Any,
     **kwargs: Any,
-) -> "Future[T]":
+) -> Future[T]:
     """Submit ``fn`` to ``pool`` preserving the caller's :class:`Context`.
 
     Equivalent to ``pool.submit(fn, *args, **kwargs)`` except the worker

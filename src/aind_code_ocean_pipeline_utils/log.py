@@ -281,7 +281,9 @@ def build_progress(
         rich.progress.TimeRemainingColumn(),
     )
     with rich.progress.Progress(
-        *columns, console=resolved, refresh_per_second=refresh_per_second,
+        *columns,
+        console=resolved,
+        refresh_per_second=refresh_per_second,
     ) as progress:
         overall_task = progress.add_task("overall", total=total_items)
         item_task = progress.add_task("item", total=1, visible=False)

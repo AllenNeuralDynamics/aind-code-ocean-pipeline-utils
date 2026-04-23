@@ -8,7 +8,7 @@ encoding of the input parameters. Canonical JSON here means:
 - NaN / ``inf`` are rejected (non-standard JSON)
 - UTF-8 encoded before hashing
 
-Given the same Python ``Mapping`` — regardless of insertion order — the same
+Given the same Python ``dict`` — regardless of insertion order — the same
 fingerprint comes out every time, on every Python version that supports the
 type annotations.
 
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from typing import Any
 
 __all__ = ["canonical_params", "input_fingerprint"]
@@ -43,7 +42,7 @@ def _validate_json(value: Any, path: str) -> None:
         if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
             raise TypeError(f"value at {path} is not JSON-standard: {value!r}")
         return
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"key at {path} is not a string: got {type(key).__name__}")
@@ -56,12 +55,12 @@ def _validate_json(value: Any, path: str) -> None:
     raise TypeError(f"value at {path} is not JSON-serializable: got {type(value).__name__}")
 
 
-def canonical_params(params: Mapping[str, Any]) -> str:
+def canonical_params(params: dict[str, Any]) -> str:
     """Return the canonical JSON encoding of ``params``.
 
     Parameters
     ----------
-    params : Mapping[str, Any]
+    params : dict[str, Any]
         The input parameters. Must be JSON-serializable; see module
         docstring for the allowed leaf types.
 
@@ -86,16 +85,16 @@ def canonical_params(params: Mapping[str, Any]) -> str:
     )
 
 
-def input_fingerprint(params: Mapping[str, Any]) -> str:
+def input_fingerprint(params: dict[str, Any]) -> str:
     """Return a stable ``sha256:`` fingerprint of ``params``.
 
-    Equal inputs (as Python mappings, regardless of key insertion order)
+    Equal inputs (as Python dicts, regardless of key insertion order)
     produce equal fingerprints. Distinct inputs almost-certainly produce
     distinct fingerprints (SHA256 collision resistance).
 
     Parameters
     ----------
-    params : Mapping[str, Any]
+    params : dict[str, Any]
         The input parameters. See :func:`canonical_params` for the
         serialization contract.
 
