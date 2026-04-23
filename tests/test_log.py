@@ -3,9 +3,88 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
+# attach_file_log is stdlib-only; tests run without the [rich] extra.
+from aind_code_ocean_pipeline_utils.log import attach_file_log
+
+
+class TestAttachFileLog:
+    def test_writes_log_line_to_file(self, tmp_path: Path) -> None:
+        logger = logging.getLogger("aind_test_attach_file_log.writes")
+        logger.handlers.clear()
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+        log_path = tmp_path / "run.log"
+        handler = attach_file_log(log_path, logger=logger)
+        try:
+            logger.info("hello from attach_file_log")
+        finally:
+            handler.close()
+            logger.removeHandler(handler)
+
+        contents = log_path.read_text()
+        assert "hello from attach_file_log" in contents
+        assert "INFO" in contents
+
+    def test_creates_missing_parent_dirs(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "nested" / "deeper" / "run.log"
+        logger = logging.getLogger("aind_test_attach_file_log.parents")
+        logger.handlers.clear()
+        logger.propagate = False
+
+        handler = attach_file_log(log_path, logger=logger)
+        try:
+            assert log_path.parent.is_dir()
+            assert log_path.exists()
+        finally:
+            handler.close()
+            logger.removeHandler(handler)
+
+    def test_preserves_existing_handlers(self, tmp_path: Path) -> None:
+        # Adding a file log must not remove an existing StreamHandler —
+        # capsules rely on stdout/stderr capture from basicConfig too.
+        logger = logging.getLogger("aind_test_attach_file_log.preserves")
+        logger.handlers.clear()
+        logger.propagate = False
+
+        sentinel = logging.NullHandler()
+        logger.addHandler(sentinel)
+
+        handler = attach_file_log(tmp_path / "run.log", logger=logger)
+        try:
+            assert sentinel in logger.handlers
+            assert handler in logger.handlers
+        finally:
+            handler.close()
+            logger.removeHandler(handler)
+            logger.removeHandler(sentinel)
+
+    def test_append_mode_does_not_truncate(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "run.log"
+        log_path.write_text("existing line\n")
+
+        logger = logging.getLogger("aind_test_attach_file_log.append")
+        logger.handlers.clear()
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+        handler = attach_file_log(log_path, mode="a", logger=logger)
+        try:
+            logger.info("appended line")
+        finally:
+            handler.close()
+            logger.removeHandler(handler)
+
+        contents = log_path.read_text()
+        assert "existing line" in contents
+        assert "appended line" in contents
+
+
+# Rich-aware helpers — skip the rest of this file if [rich] isn't installed.
 rich = pytest.importorskip("rich")
 from rich.console import Console  # noqa: E402
 from rich.logging import RichHandler  # noqa: E402

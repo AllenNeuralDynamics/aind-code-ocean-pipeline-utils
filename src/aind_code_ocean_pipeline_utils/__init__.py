@@ -1,10 +1,9 @@
 """Utilities for use in Code Ocean pipelines.
 
-Core primitives are re-exported at the package level. The optional
-:mod:`.log` module requires the ``[rich]`` extra and must be imported
-explicitly::
-
-    from aind_code_ocean_pipeline_utils.log import install_rich_handler
+Core primitives are re-exported at the package level. The rich-aware
+helpers in :mod:`.log` (``install_rich_handler``, ``build_progress``)
+require the optional ``[rich]`` extra and must be imported explicitly;
+:func:`attach_file_log` is stdlib-only and re-exported here.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -18,6 +17,7 @@ from .io import (
     atomic_write_text,
     retry_on_oserror,
 )
+from .log import attach_file_log
 from .process import (
     GracefulExit,
     check_shutdown,
@@ -53,6 +53,7 @@ __all__ = [
     "__version__",
     "atomic_json_write",
     "atomic_write_text",
+    "attach_file_log",
     "canonical_params",
     "capsule_commit",
     "check_shutdown",

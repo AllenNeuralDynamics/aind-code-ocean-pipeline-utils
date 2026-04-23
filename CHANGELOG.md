@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Feat
+
+- **log**: add stdlib-only `attach_file_log(path)` for persisting
+  capsule logs to ``/results`` alongside the usual stream output.
+  Re-exported at top level.
+
+### Refactor
+
+- **log**: rich imports are now lazy-loaded inside the rich-aware
+  helpers, so `attach_file_log` works without the `[rich]` extra.
+  Importing `aind_code_ocean_pipeline_utils.log` no longer requires
+  rich. Calling the rich helpers without the extra still raises
+  `ImportError` with install instructions (unchanged behavior).
+
 ## 0.1.0 (2026-04-21)
 
 ### Feat
