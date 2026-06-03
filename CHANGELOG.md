@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **io**: add retry_on_oserror and atomic writes
 - **process**: add graceful shutdown module
 
+## v0.3.0 (2026-06-03)
+
+### Feat
+
+- add optional metadata module for processing.json DAG assembly
+
 ## v0.2.0 (2026-04-23)
 
 ### Feat
