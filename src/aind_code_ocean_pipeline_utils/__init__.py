@@ -5,8 +5,9 @@ helpers in :mod:`.log` (``install_rich_handler``, ``build_progress``)
 require the optional ``[rich]`` extra and must be imported explicitly;
 :func:`attach_file_log` is stdlib-only and re-exported here. Likewise the
 :mod:`.metadata` helpers (``make_data_process``, ``append_process``,
-``emit_processing``) require the optional ``[metadata]`` extra
-(``aind-data-schema``) and are import-only.
+``emit_processing``) and the :mod:`.step` ``processing.json`` decorator
+(``capsule_step`` / ``processing_step``) require the optional ``[metadata]``
+extra (``aind-data-schema``) and are import-only.
 """
 
 from importlib.metadata import PackageNotFoundError, version

@@ -40,6 +40,7 @@ pip install aind-code-ocean-pipeline-utils[rich]
 | `cli`             | `parse_truthy()` for CO app-panel string parameters              | stdlib      |
 | `log`             | Rich logging + `build_progress` / `make_progress_callback`       | `[rich]`    |
 | `metadata`        | Build a node's aind-data-schema `processing.json`, wiring the DAG along data-flow edges | `[metadata]` |
+| `step`            | `@capsule_step` / `processing_step` — one-line `processing.json` emission for a capsule  | `[metadata]` |
 
 Core primitives are re-exported at the package level:
 
@@ -321,6 +322,45 @@ Lower-level pieces (`read_processings`, `append_process`, `write_processing`)
 are available if you need to inspect or merge graphs by hand. Compatible with
 the standard aggregator, which preserves `dependency_graph` from any
 `processing.json` it receives.
+
+## `step` — frictionless `processing.json` (optional `[metadata]` extra)
+
+The `metadata` module is the low-level API; `step` collapses the whole ceremony
+to a decorator so every capsule can emit a `processing.json` without
+boilerplate. It times the run, builds the `DataProcess`, frontier-appends onto
+the upstream graphs, writes `/results/processing.json`, and forwards the
+ancillary metadata files — all best-effort, so a metadata hiccup never sinks the
+capsule (the wrapped function's *own* exceptions still propagate, and a failed
+step emits nothing).
+
+```python
+from aind_code_ocean_pipeline_utils.step import capsule_step
+
+@capsule_step("Skull stripping", name="mri-skull-stripping")
+def run() -> None:
+    ...   # the actual work, unchanged
+```
+
+`process_type` takes a plain human label (a known one coerces to the matching
+`ProcessName`; an unknown one becomes `OTHER` with the label kept as `notes`).
+`name` is the required, explicit DAG node id. `code_url`, `commit_hash`,
+`version`, and `experimenters` auto-derive from the `/code` checkout, Code Ocean
+env vars, and the upstream metadata, with explicit overrides; anything
+underivable degrades to `None`/`[]` rather than failing. Pass a
+subject-namespaced `output_dir` for fan-out nodes. For parameters or notes
+computed at runtime, use the `processing_step` context-manager twin:
+
+```python
+from aind_code_ocean_pipeline_utils.step import processing_step
+
+with processing_step("Image atlas alignment", name="mri-registration") as step:
+    step.parameters = {"mask_dilate": 4}
+    step.notes = "build5 template"
+    ...   # the work
+```
+
+Because the terminal node's `processing.json` already holds the full DAG, you
+can publish it directly and drop the metadata aggregator entirely.
 
 ## Development
 
