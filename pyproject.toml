@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rich = ["rich>=13"]
+metadata = ["aind-data-schema>=2.7,<3"]
 
 [project.urls]
 Repository = "https://github.com/AllenNeuralDynamics/aind-code-ocean-pipeline-utils/"
@@ -36,6 +37,7 @@ dev = [
     "ruff",
     "interrogate",
     "rich>=13",
+    "aind-data-schema>=2.7,<3",
     "commitizen>=4.13.10",
 ]
 jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]
@@ -95,4 +97,10 @@ exclude = ["scratch"]
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+
+# aind-data-schema ships no py.typed marker; treat its imports as untyped
+# rather than failing strict mode (only used by the optional `metadata` module).
+[[tool.mypy.overrides]]
+module = ["aind_data_schema.*", "aind_data_schema_models.*"]
+ignore_missing_imports = true
 

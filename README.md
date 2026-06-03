@@ -39,6 +39,7 @@ pip install aind-code-ocean-pipeline-utils[rich]
 | `provenance`      | `capsule_commit()` + `package_version()` for manifest stamping   | stdlib      |
 | `cli`             | `parse_truthy()` for CO app-panel string parameters              | stdlib      |
 | `log`             | Rich logging + `build_progress` / `make_progress_callback`       | `[rich]`    |
+| `metadata`        | Build a node's aind-data-schema `processing.json`, wiring the DAG along data-flow edges | `[metadata]` |
 
 Core primitives are re-exported at the package level:
 
@@ -284,6 +285,42 @@ with build_progress(len(items)) as (progress, overall, item):
 `build_progress` raises `RuntimeError` if `install_rich_handler` hasn't
 been called (unless you pass `console=` explicitly) — keeps the
 shared-`Console` invariant honest.
+
+## `metadata` — aind-data-schema `processing.json` (optional `[metadata]` extra)
+
+A Code Ocean pipeline is a Nextflow DAG, but no single capsule sees the whole
+graph. The only place the true edges are knowable with *local* information is
+along the data-flow: a node's inputs **are** its DAG parents. So each node
+builds its `processing.json` from the upstream `processing.json` files handed to
+it (under `/data`), appends its own `DataProcess` wired to the *frontier* of the
+merged upstream graph, and writes the result to `/results`. Fan-in is a graph
+union plus an edge from the new node to each branch's frontier; the terminal
+node holds the complete, correct DAG.
+
+```python
+from aind_code_ocean_pipeline_utils.metadata import emit_processing, make_data_process, utcnow
+from aind_code_ocean_pipeline_utils.provenance import capsule_commit, package_version
+from aind_data_schema.core.processing import ProcessName
+
+start = utcnow()
+# ... do the work ...
+proc = make_data_process(
+    process_type=ProcessName.IMAGE_ATLAS_ALIGNMENT,
+    name="my-registration-step",            # unique, stable node id
+    code_url="https://github.com/AllenNeuralDynamics/my-capsule",
+    experimenters=["..."],
+    start=start,
+    commit_hash=capsule_commit(),
+    version=package_version("my-package"),
+    output_path="/results/sub-123",
+)
+emit_processing(proc, input_dir="/data", output_dir="/results/sub-123")
+```
+
+Lower-level pieces (`read_processings`, `append_process`, `write_processing`)
+are available if you need to inspect or merge graphs by hand. Compatible with
+the standard aggregator, which preserves `dependency_graph` from any
+`processing.json` it receives.
 
 ## Development
 
