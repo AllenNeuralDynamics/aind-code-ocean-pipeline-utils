@@ -362,6 +362,14 @@ with processing_step("Image atlas alignment", name="mri-registration") as step:
 Because the terminal node's `processing.json` already holds the full DAG, you
 can publish it directly and drop the metadata aggregator entirely.
 
+**Light tax.** `aind-data-schema` is imported *lazily* — only inside the emit
+path, which runs after the wrapped work. So importing `step` and applying
+`@capsule_step` cost nothing schema-related (~35 ms, no `aind-data-schema`),
+the schema load (~80 ms) is paid once at the end of a *successful* run and
+skipped entirely if the work raises early, and a capsule that forgets the
+`[metadata]` extra degrades to a logged no-op instead of an import error at
+startup.
+
 ## Development
 
 ```bash

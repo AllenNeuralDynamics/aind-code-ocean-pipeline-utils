@@ -200,6 +200,25 @@ def test_bad_commit_hash_dropped_not_fatal(tmp_path):
     assert proc.code.commit_hash is None  # dropped, step still emitted
 
 
+def test_step_import_is_lazy_no_aind_data_schema():
+    # Importing the step module + applying the decorator must NOT import
+    # aind-data-schema (the heavy [metadata] dep) — it's deferred to emit time.
+    import subprocess
+    import sys
+
+    code = (
+        "import aind_code_ocean_pipeline_utils.step as s\n"
+        "from aind_code_ocean_pipeline_utils.step import capsule_step\n"
+        "@capsule_step('Skull stripping', name='x')\n"
+        "def run():\n"
+        "    return 1\n"
+        "import sys\n"
+        "pulled = [m for m in sys.modules if m.startswith('aind_data_schema')]\n"
+        "assert not pulled, pulled\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_chain_through_two_steps_builds_graph(tmp_path):
     data1 = tmp_path / "d1"
     out1 = tmp_path / "o1"

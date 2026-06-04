@@ -54,19 +54,20 @@ import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from aind_data_schema.core.processing import (
-    Code,
-    Processing,
-    ProcessName,
-    ProcessStage,
-)
-
-from .metadata import emit_processing, make_data_process, read_processings, utcnow
 from .provenance import capsule_commit
+
+# aind-data-schema (the heavy, optional ``[metadata]`` dependency) is imported
+# LAZILY — only inside the emit path, which runs *after* the wrapped work. This
+# keeps decoration/startup free of the ~80 ms schema import, defers that cost to
+# the end of a successful run, skips it entirely when the work raises early, and
+# lets the decorator degrade to a logged no-op if the extra isn't installed.
+# Type-only references stay valid via TYPE_CHECKING + ``from __future__``.
+if TYPE_CHECKING:
+    from aind_data_schema.core.processing import Code, Processing, ProcessName, ProcessStage
 
 __all__ = [
     "DEFAULT_FORWARDED_METADATA",
@@ -128,6 +129,8 @@ def coerce_process_type(value: str | ProcessName) -> tuple[ProcessName, str | No
         string, that string as a ``notes`` fallback (``None`` otherwise). The
         schema requires ``notes`` whenever the type is ``OTHER``.
     """
+    from aind_data_schema.core.processing import ProcessName
+
     if isinstance(value, ProcessName):
         return value, None
     try:
@@ -276,6 +279,8 @@ def derive_experimenters(
     """
     if explicit:
         return list(explicit)
+    from .metadata import read_processings
+
     root = Path(input_dir)
     upstream = incoming if incoming is not None else read_processings(root)
     from_procs = _experimenters_from_processings(upstream)
@@ -367,7 +372,7 @@ def _emit_step(
     code_url: str | None,
     code_dir: str,
     experimenters: Sequence[str] | None,
-    stage: ProcessStage,
+    stage: ProcessStage | str,
     version: str | None,
     commit_hash: str | None,
     parameters: Mapping[str, Any] | None,
@@ -375,10 +380,20 @@ def _emit_step(
     pipelines: Sequence[Code] | None,
     forward: bool,
 ) -> None:
-    """Build and write this step's processing.json. Best-effort; never raises."""
+    """Build and write this step's processing.json. Best-effort; never raises.
+
+    The aind-data-schema import lives here (not at module top) so a capsule pays
+    the schema cost only on a successful run, and a missing ``[metadata]`` extra
+    degrades to a logged warning rather than an import error at startup.
+    """
     try:
+        from aind_data_schema.core.processing import ProcessStage
+
+        from .metadata import emit_processing, make_data_process
+
         ptype, label = coerce_process_type(process_type)
         resolved_notes = ctx.notes or notes or label
+        resolved_stage = ProcessStage(stage) if isinstance(stage, str) else stage
         resolved_exps = ctx.experimenters if ctx.experimenters is not None else experimenters
         if resolved_exps is None:
             resolved_exps = derive_experimenters(input_dir=input_dir)
@@ -389,7 +404,7 @@ def _emit_step(
             code_url=derive_code_url(explicit=code_url, code_dir=code_dir) or "",
             experimenters=resolved_exps,
             start=start,
-            stage=stage,
+            stage=resolved_stage,
             name=name,
             version=version,
             commit_hash=_valid_commit(commit_hash if commit_hash is not None else capsule_commit(code_dir=code_dir)),
@@ -414,7 +429,7 @@ def processing_step(
     code_url: str | None = None,
     code_dir: str = "/code",
     experimenters: Sequence[str] | None = None,
-    stage: ProcessStage = ProcessStage.PROCESSING,
+    stage: ProcessStage | str = "Processing",
     version: str | None = None,
     commit_hash: str | None = None,
     parameters: Mapping[str, Any] | None = None,
@@ -447,8 +462,9 @@ def processing_step(
         Git checkout used to derive ``code_url`` and ``commit_hash``.
     experimenters : Sequence[str], optional
         Responsible people; auto-derived from upstream metadata otherwise.
-    stage : ProcessStage, default ``ProcessStage.PROCESSING``
-        Processing vs Analysis.
+    stage : ProcessStage or str, default ``"Processing"``
+        Processing vs Analysis. A string is coerced to ``ProcessStage`` at emit
+        time (kept as a string default so importing this module needs no schema).
     version : str, optional
         Code version stamp.
     commit_hash : str, optional
@@ -469,7 +485,7 @@ def processing_step(
     StepContext
     """
     ctx = StepContext()
-    start = utcnow()
+    start = datetime.now(UTC)  # tz-aware; schema-free so it stays a cheap import
     yield ctx
     _emit_step(
         ctx=ctx,
@@ -500,7 +516,7 @@ def capsule_step(
     code_url: str | None = None,
     code_dir: str = "/code",
     experimenters: Sequence[str] | None = None,
-    stage: ProcessStage = ProcessStage.PROCESSING,
+    stage: ProcessStage | str = "Processing",
     version: str | None = None,
     commit_hash: str | None = None,
     parameters: Mapping[str, Any] | None = None,
