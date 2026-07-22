@@ -33,10 +33,11 @@ Design choices (so authors never fight the schema):
   with the label preserved as ``notes``. No need to memorize the closed enum.
 * **name is required and explicit** — it is the DAG node key; inferring it
   risks corrupting the graph.
-* **code_url, commit_hash, version, experimenters auto-derive** from the git
-  checkout, Code Ocean env vars, and the upstream metadata, with explicit
-  overrides. Anything underivable degrades to ``None``/``[]`` rather than
-  failing.
+* **code_url, commit_hash, experimenters auto-derive** from the git checkout,
+  Code Ocean env vars, and the upstream metadata, with explicit overrides.
+  Anything underivable degrades to ``None``/``[]`` rather than failing.
+  ``version`` is the exception: it is *not* derived — pass it explicitly (e.g.
+  ``version=package_version("my-package")``) or it stays ``None``.
 * **All metadata work is best-effort** — a failure here logs and is swallowed
   so it never sinks the capsule. The wrapped function's *own* exceptions
   propagate (a failed step emits nothing).

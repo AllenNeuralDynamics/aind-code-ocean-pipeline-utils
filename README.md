@@ -325,13 +325,35 @@ the standard aggregator, which preserves `dependency_graph` from any
 
 ## `step` — frictionless `processing.json` (optional `[metadata]` extra)
 
-The `metadata` module is the low-level API; `step` collapses the whole ceremony
-to a decorator so every capsule can emit a `processing.json` without
-boilerplate. It times the run, builds the `DataProcess`, frontier-appends onto
-the upstream graphs, writes `/results/processing.json`, and forwards the
-ancillary metadata files — all best-effort, so a metadata hiccup never sinks the
-capsule (the wrapped function's *own* exceptions still propagate, and a failed
-step emits nothing).
+**The pain.** Every capsule in a pipeline is expected to emit a
+`processing.json` so the terminal node carries the full provenance DAG. Done by
+hand, that is a surprising amount of fiddly, easy-to-get-wrong work at the *end*
+of every capsule — after the expensive part has already run:
+
+- Build a `DataProcess` against the schema: pick the right `ProcessName` from a
+  closed enum, produce tz-aware timestamps (a naive `datetime` fails
+  validation), and satisfy conditional requirements (e.g. `notes` is mandatory
+  when the type is `OTHER`).
+- Derive the provenance fields — `code_url`, `commit_hash`, `version`,
+  `experimenters` — from the `/code` git checkout, Code Ocean env vars, and
+  upstream metadata, each with its own fallback chain.
+- **Reconstruct the DAG correctly.** Read *every* upstream `processing.json`
+  under `/data`, union their dependency graphs, collapse diamonds, and wire your
+  node to the *frontier* (the current sinks). The stock aggregator instead
+  chains records in filesystem-discovery order — which has nothing to do with
+  the real topology — so the naive path silently produces a *wrong* graph.
+- Forward the ancillary metadata files (`subject.json`, `data_description.json`,
+  …) that must ride the chain, locating them by recursive search because
+  pipeline mounts nest unpredictably.
+- Wrap **all** of it best-effort, because a metadata bug that raises would
+  otherwise throw away a multi-hour run at the finish line.
+
+**The solution.** `step` collapses that entire ceremony to one decorator. On a
+clean return it times the run, builds the `DataProcess`, reads and unions the
+upstream graphs and frontier-appends this node, writes `/results/processing.json`,
+and forwards the ancillary metadata files — all best-effort, so a metadata
+hiccup never sinks the capsule (the wrapped function's *own* exceptions still
+propagate, and a failed step emits nothing).
 
 ```python
 from aind_code_ocean_pipeline_utils.step import capsule_step
@@ -341,12 +363,20 @@ def run() -> None:
     ...   # the actual work, unchanged
 ```
 
+**The DAG is re-aggregated at every node, incrementally — there is no separate
+aggregation stage.** Each capsule re-reads its upstream `processing.json` files
+and unions their `dependency_graph`s before appending itself, so the merged
+graph grows one node at a time and the terminal node ends up holding the
+complete, correct DAG. Nothing does a global rebuild at the end; the wiring is
+always a local frontier-append.
+
 `process_type` takes a plain human label (a known one coerces to the matching
 `ProcessName`; an unknown one becomes `OTHER` with the label kept as `notes`).
-`name` is the required, explicit DAG node id. `code_url`, `commit_hash`,
-`version`, and `experimenters` auto-derive from the `/code` checkout, Code Ocean
-env vars, and the upstream metadata, with explicit overrides; anything
-underivable degrades to `None`/`[]` rather than failing. Pass a
+`name` is the required, explicit DAG node id. `code_url`, `commit_hash`, and
+`experimenters` auto-derive from the `/code` checkout, Code Ocean env vars, and
+the upstream metadata, with explicit overrides; anything underivable degrades to
+`None`/`[]` rather than failing. `version` is *not* derived — pass it explicitly
+(e.g. `version=package_version("my-package")`) or it stays `None`. Pass a
 subject-namespaced `output_dir` for fan-out nodes. For parameters or notes
 computed at runtime, use the `processing_step` context-manager twin:
 
