@@ -18,7 +18,7 @@ license: MIT
 project_description: Utilities for use in Code Ocean pipelines
 project_name: AIND Code Ocean pipeline utils
 project_slug: aind-code-ocean-pipeline-utils
-publish_to_pypi: false
+publish_to_pypi: true
 python_package_import_name: aind_code_ocean_pipeline_utils
 python_version: '3.11'
 target_python_version: '3.13'
