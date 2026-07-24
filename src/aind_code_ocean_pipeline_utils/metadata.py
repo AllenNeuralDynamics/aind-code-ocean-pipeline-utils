@@ -35,16 +35,21 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from aind_data_schema.core.data_description import DataDescription
-from aind_data_schema.core.processing import (
-    Code,
-    DataProcess,
-    Processing,
-    ProcessName,
-    ProcessStage,
-)
+# aind-data-schema (the optional ``[metadata]`` extra) is imported LAZILY inside the
+# functions that construct its models -- so importing this module (e.g. the wheel
+# smoke test's walk-import of every submodule) never fails on the minimal install;
+# only *calling* a function without the extra does. Type-only names stay valid via
+# TYPE_CHECKING + ``from __future__ import annotations``.
+if TYPE_CHECKING:
+    from aind_data_schema.core.data_description import DataDescription
+    from aind_data_schema.core.processing import (
+        DataProcess,
+        Processing,
+        ProcessName,
+        ProcessStage,
+    )
 
 __all__ = [
     "make_data_process",
@@ -76,7 +81,7 @@ def make_data_process(
     experimenters: Sequence[str],
     start: datetime,
     end: datetime | None = None,
-    stage: ProcessStage = ProcessStage.PROCESSING,
+    stage: ProcessStage | None = None,
     name: str | None = None,
     version: str | None = None,
     commit_hash: str | None = None,
@@ -99,8 +104,8 @@ def make_data_process(
         Timezone-aware start time (capture before the work runs).
     end : datetime.datetime, optional
         Timezone-aware end time; defaults to :func:`utcnow` if omitted.
-    stage : ProcessStage, default ``ProcessStage.PROCESSING``
-        Processing vs Analysis stage.
+    stage : ProcessStage, optional
+        Processing vs Analysis stage; defaults to ``ProcessStage.PROCESSING``.
     name : str, optional
         Unique node name. Required if this process will participate in a
         dependency graph.
@@ -120,10 +125,12 @@ def make_data_process(
     -------
     DataProcess
     """
+    from aind_data_schema.core.processing import Code, DataProcess, ProcessStage
+
     return DataProcess(
         process_type=process_type,
         name=name,
-        stage=stage,
+        stage=stage if stage is not None else ProcessStage.PROCESSING,
         experimenters=list(experimenters),
         start_date_time=start,
         end_date_time=end if end is not None else utcnow(),
@@ -195,6 +202,8 @@ def make_derived_data_description(
     DataDescription
         A ``DERIVED`` data description.
     """
+    from aind_data_schema.core.data_description import DataDescription
+
     parent_dd = parent if isinstance(parent, DataDescription) else DataDescription.model_validate(dict(parent))
     return DataDescription.from_data_description(
         parent_dd,
