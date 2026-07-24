@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **io**: add retry_on_oserror and atomic writes
 - **process**: add graceful shutdown module
 
+## v0.5.0 (2026-07-24)
+
+### Feat
+
+- schema-free provenance breadcrumbs; drop processing.json hot path
+
+### Fix
+
+- lazy-import aind-data-schema in metadata.py for the wheel smoke test
+
 ## v0.4.2 (2026-07-22)
 
 ### Fix
