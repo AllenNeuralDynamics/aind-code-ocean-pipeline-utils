@@ -22,16 +22,19 @@ minutes on a SmartSPIM zarr / sorted-ephys asset's millions of files.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 __all__ = [
     "DEFAULT_INHERITED_METADATA",
     "find_metadata_file",
     "forward_metadata",
+    "read_data_description_fields",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -45,6 +48,62 @@ DEFAULT_INHERITED_METADATA: tuple[str, ...] = (
     "instrument.json",
     "acquisition.json",
 )
+
+
+def _stable_str(value: object) -> str | None:
+    """Return ``value`` if it is a non-empty string, else ``None``."""
+    return value if isinstance(value, str) and value else None
+
+
+def read_data_description_fields(source: str | Path | Mapping[str, Any]) -> dict[str, Any]:
+    """Best-effort raw read of version-stable primitives from a ``data_description``.
+
+    Reads a ``data_description.json`` (path) or an already-parsed mapping as a **raw
+    dict** -- it is **never** schema-validated. Only fields whose meaning is stable
+    across aind-data-schema versions are pulled; everything else (removed/renamed
+    fields, changed ``Organization``/``Person`` shapes) is ignored. This is immune
+    to schema churn, so it works on an input whose schema version is unknown or old
+    -- use it to author a fresh *derived* record from the extracted primitives plus
+    caller-supplied (pipeline-specific) constants, without ever parsing the input
+    into a versioned model.
+
+    Parameters
+    ----------
+    source : str or pathlib.Path or Mapping[str, Any]
+        A path to a ``data_description.json``, or an already-parsed mapping. An
+        unreadable / non-object source yields all-empty fields (never raises).
+
+    Returns
+    -------
+    dict[str, Any]
+        ``{"name", "subject_id", "project_name", "investigator_names"}``. Each is
+        ``None`` when absent/unreadable, except ``investigator_names`` which is a
+        (possibly empty) list of the string ``name`` of each investigator entry.
+    """
+    raw: Any
+    if isinstance(source, Mapping):
+        raw = source
+    else:
+        try:
+            raw = json.loads(Path(source).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            _logger.debug("could not read data_description %s: %s", source, exc)
+            raw = {}
+    if not isinstance(raw, Mapping):
+        raw = {}
+
+    investigators: list[str] = []
+    for entry in raw.get("investigators") or []:
+        name = _stable_str(entry.get("name")) if isinstance(entry, Mapping) else _stable_str(entry)
+        if name:
+            investigators.append(name)
+
+    return {
+        "name": _stable_str(raw.get("name")),
+        "subject_id": _stable_str(raw.get("subject_id")),
+        "project_name": _stable_str(raw.get("project_name")),
+        "investigator_names": investigators,
+    }
 
 
 def find_metadata_file(root: str | Path, filename: str, *, max_depth: int = 4) -> Path | None:

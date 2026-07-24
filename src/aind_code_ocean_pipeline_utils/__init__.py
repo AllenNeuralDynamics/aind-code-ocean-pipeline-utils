@@ -27,6 +27,7 @@ from .metadata_files import (
     DEFAULT_INHERITED_METADATA,
     find_metadata_file,
     forward_metadata,
+    read_data_description_fields,
 )
 from .process import (
     GracefulExit,
@@ -94,6 +95,7 @@ __all__ = [
     "merge_manifests",
     "package_version",
     "parse_truthy",
+    "read_data_description_fields",
     "read_records",
     "record_step",
     "reset_shutdown_state",
