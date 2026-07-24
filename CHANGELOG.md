@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **io**: add retry_on_oserror and atomic writes
 - **process**: add graceful shutdown module
 
+## v0.6.0 (2026-07-24)
+
+### Feat
+
+- add read_data_description_fields for version-agnostic input reads
+
 ## v0.5.0 (2026-07-24)
 
 ### Feat
