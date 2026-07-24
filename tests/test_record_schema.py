@@ -6,6 +6,11 @@ import json
 from pathlib import Path
 
 import pytest
+
+# jsonschema is a dev-only test dependency (not a runtime extra); skip cleanly when
+# absent, e.g. in the CI job that runs against the installed wheel without dev deps.
+pytest.importorskip("jsonschema")
+
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
@@ -18,12 +23,7 @@ from aind_code_ocean_pipeline_utils.record_schema import (
 )
 from aind_code_ocean_pipeline_utils.records import make_record
 
-_ARTIFACT = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "aind_code_ocean_pipeline_utils"
-    / SCHEMA_ARTIFACT_RELPATH
-)
+_ARTIFACT = Path(__file__).resolve().parents[1] / "src" / "aind_code_ocean_pipeline_utils" / SCHEMA_ARTIFACT_RELPATH
 
 
 def _validator() -> Draft202012Validator:
@@ -117,6 +117,4 @@ def test_non_string_parent_is_rejected():
 
 def test_pipeline_requires_name():
     with pytest.raises(ValidationError):
-        _validator().validate(
-            {"v": RECORD_VERSION, "node": "a", "parents": [], "pipeline": {"code": {}}}
-        )
+        _validator().validate({"v": RECORD_VERSION, "node": "a", "parents": [], "pipeline": {"code": {}}})

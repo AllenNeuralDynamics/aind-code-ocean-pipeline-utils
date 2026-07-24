@@ -156,9 +156,7 @@ def test_read_records_superset_supersedes_stub(tmp_path: Path, caplog: pytest.Lo
 
 def test_read_records_superset_supersedes_regardless_of_scan_order(tmp_path: Path):
     # Full first, then stub -> still keeps the full (order-independent).
-    write_record(
-        {"v": 1, "node": "d", "parents": [], "data_process": {"x": 1}}, tmp_path / "a_full"
-    )
+    write_record({"v": 1, "node": "d", "parents": [], "data_process": {"x": 1}}, tmp_path / "a_full")
     write_record({"v": 1, "node": "d", "parents": []}, tmp_path / "z_stub")
     records = read_records(tmp_path)
     assert records[0].get("data_process") == {"x": 1}
