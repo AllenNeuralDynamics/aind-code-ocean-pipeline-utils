@@ -437,6 +437,12 @@ def _finalize_record(
     # step N sees step N-1's just-written shard. First-seen wins on overlap.
     incoming = _dedup_records([*read_records(incoming_dir), *read_records(output_dir)])
     resolved_parents = list(parents) if parents is not None else frontier(incoming)
+    # A node is never its own parent. A launcher's fan-out stubs (written into this
+    # node's own output_dir by write_stream_configs) and a monolith re-run both put
+    # a same-node shard in the scanned set, so frontier would otherwise return self;
+    # an explicit parents= list could also name it by mistake. Drop it either way --
+    # the propagation loop below already excludes the same-node shard.
+    resolved_parents = [p for p in resolved_parents if p != node]
 
     record = make_record(
         node,

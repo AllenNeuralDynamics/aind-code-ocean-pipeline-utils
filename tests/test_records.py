@@ -261,6 +261,34 @@ def test_record_step_explicit_parents_override_frontier(tmp_path: Path):
     assert b_shard["parents"] == ["hand-declared"]
 
 
+def test_record_step_never_lists_itself_as_parent_from_own_output(tmp_path: Path):
+    # A launcher side-writes its own fan-out stub into its output_dir during the
+    # body (as write_stream_configs does). Parent inference then scans output_dir
+    # and would re-ingest that same-node stub -- a node must never become its own
+    # parent. It is a source node, so parents stay empty.
+    out = tmp_path / "out"
+    empty_in = tmp_path / "empty"
+    with record_step("ibl-discover", process_type="Other", incoming_dir=empty_in, output_dir=out):
+        write_record(make_record("ibl-discover"), out / "stream_0")
+    shard = json.loads((out / "provenance" / "ibl-discover.json").read_text())
+    assert shard["parents"] == []
+
+
+def test_record_step_strips_self_from_explicit_parents(tmp_path: Path):
+    # Even a hand-declared parents= naming the node itself is dropped.
+    out = tmp_path / "out"
+    with record_step(
+        "B",
+        process_type="Other",
+        incoming_dir=tmp_path / "empty",
+        output_dir=out,
+        parents=["A", "B"],
+    ):
+        pass
+    shard = json.loads((out / "provenance" / "B.json").read_text())
+    assert shard["parents"] == ["A"]
+
+
 def test_record_step_body_failure_emits_nothing(tmp_path: Path):
     out = tmp_path / "out"
     with pytest.raises(RuntimeError, match="boom"):
