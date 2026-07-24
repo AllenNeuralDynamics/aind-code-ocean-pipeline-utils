@@ -42,7 +42,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -112,12 +112,25 @@ def write_stream_configs(
     name_key: str = "name",
     dir_prefix: str = "stream_",
     sanitize: Callable[[str], str] = default_sanitize,
+    producer_record: Mapping[str, Any] | None = None,
 ) -> list[Path]:
     """Launcher side: write one config JSON per item, schema-tagged.
 
     Each output is ``<results_dir>/<dir_prefix><sanitize(item[name_key])>/config.json``
     containing the full item mapping plus ``{schema_marker: schema_version}``
     so workers can recognize it among nested staged inputs.
+
+    Fan-out breadcrumb (``producer_record``)
+    ----------------------------------------
+    A Flatten fan-out *distributes* per-item slices; it does not *broadcast* the
+    launcher's shared ``provenance/``, so a fanned worker never receives the
+    launcher's shard and cannot infer it as a parent. Passing ``producer_record``
+    side-writes the launcher's provenance shard into **each** per-item directory as
+    ``<dir_prefix><safe>/provenance/<node>.json`` — a separate file, leaving
+    ``config.json`` (the work-item contract) untouched. Flatten then delivers it
+    per-unit, and the worker infers ``parents`` by frontier exactly like a linear
+    node (no ``parents=`` override needed). See
+    :func:`aind_code_ocean_pipeline_utils.records.record_step`.
 
     Parameters
     ----------
@@ -139,6 +152,10 @@ def write_stream_configs(
         Prefix on each per-item subdirectory.
     sanitize : callable, default :func:`default_sanitize`
         Transform applied to the name before use as a directory.
+    producer_record : Mapping[str, Any], optional
+        The launcher's provenance shard (see :func:`make_record`). When given, it
+        is side-written into every per-item ``provenance/`` subdir. A record with no
+        non-empty ``node`` is skipped with a warning.
 
     Returns
     -------
@@ -152,6 +169,14 @@ def write_stream_configs(
     """
     base = Path(results_dir)
     base.mkdir(parents=True, exist_ok=True)
+
+    producer_node: str | None = None
+    if producer_record is not None:
+        node = producer_record.get("node")
+        if isinstance(node, str) and node:
+            producer_node = node
+        else:
+            _logger.warning("producer_record has no 'node'; skipping provenance side-write")
 
     written: list[Path] = []
     for item in items:
@@ -167,6 +192,11 @@ def write_stream_configs(
         atomic_json_write(cfg_path, payload)
         written.append(cfg_path)
         _logger.info("wrote stream config: %s", cfg_path)
+
+        if producer_node is not None and producer_record is not None:
+            prov_dir = stream_dir / "provenance"
+            prov_dir.mkdir(parents=True, exist_ok=True)
+            atomic_json_write(prov_dir / f"{sanitize(producer_node)}.json", dict(producer_record))
     return written
 
 

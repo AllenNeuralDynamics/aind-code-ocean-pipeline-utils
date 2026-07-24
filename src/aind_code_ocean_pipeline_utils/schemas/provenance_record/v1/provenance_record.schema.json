@@ -1,0 +1,66 @@
+{
+  "$id": "https://raw.githubusercontent.com/AllenNeuralDynamics/aind-code-ocean-pipeline-utils/main/src/aind_code_ocean_pipeline_utils/schemas/provenance_record/v1/provenance_record.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "One node's provenance shard: an owned routing envelope wrapping opaque, author-only payloads. This library reads only 'v', 'node', and 'parents'.",
+  "properties": {
+    "data_process": {
+      "description": "Opaque serialized aind-data-schema DataProcess; never parsed by this library.",
+      "type": "object"
+    },
+    "data_process_schema_version": {
+      "description": "Version of aind-data-schema that authored 'data_process', for later assembly.",
+      "type": "string"
+    },
+    "experimenters": {
+      "description": "Run-level default responsible people; launcher-owned.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "node": {
+      "description": "Unique node id; also the authored DataProcess.name (the dependency_graph key space).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "parents": {
+      "description": "Direct-parent node ids ([] for a source node). The adjacency list IS the DAG.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "pipeline": {
+      "additionalProperties": true,
+      "description": "Run-level pipeline block; launcher-owned. Only 'name' is read.",
+      "properties": {
+        "code": {
+          "description": "Opaque serialized aind-data-schema pipeline Code payload.",
+          "type": "object"
+        },
+        "name": {
+          "description": "Pipeline name; links DataProcess.pipeline_name to Processing.pipelines.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "v": {
+      "const": 1,
+      "description": "Envelope major version. Additive changes do not bump it."
+    }
+  },
+  "required": [
+    "v",
+    "node",
+    "parents"
+  ],
+  "title": "Provenance breadcrumb record",
+  "type": "object",
+  "x-schema-version": "1.0.0"
+}

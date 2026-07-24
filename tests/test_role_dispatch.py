@@ -124,6 +124,58 @@ def test_write_stream_configs_is_atomic_on_serialization_error(tmp_path: Path):
     assert siblings == []
 
 
+def test_write_stream_configs_side_writes_producer_record(tmp_path: Path):
+    # Fan-out breadcrumb: the launcher shard lands in EACH per-item provenance/,
+    # so a fanned worker can infer it as a parent by frontier.
+    items = [{"name": "unitA"}, {"name": "unit B"}]
+    producer = {"v": 1, "node": "discover", "parents": []}
+    write_stream_configs(
+        items,
+        results_dir=tmp_path,
+        schema_marker=SCHEMA_MARKER,
+        producer_record=producer,
+    )
+    for safe in ("unitA", "unit_B"):
+        shard = tmp_path / f"stream_{safe}" / "provenance" / "discover.json"
+        assert shard.exists()
+        assert json.loads(shard.read_text()) == producer
+
+
+def test_write_stream_configs_does_not_pollute_config_json(tmp_path: Path):
+    # config.json (the work-item contract) must stay untouched by the breadcrumb.
+    items = [{"name": "unitA", "source": "s3://x"}]
+    producer = {"v": 1, "node": "discover", "parents": []}
+    write_stream_configs(
+        items,
+        results_dir=tmp_path,
+        schema_marker=SCHEMA_MARKER,
+        producer_record=producer,
+    )
+    cfg = json.loads((tmp_path / "stream_unitA" / "config.json").read_text())
+    assert "node" not in cfg
+    assert "parents" not in cfg
+    assert cfg["source"] == "s3://x"
+
+
+def test_write_stream_configs_skips_nodeless_producer_record(tmp_path: Path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        write_stream_configs(
+            [{"name": "unitA"}],
+            results_dir=tmp_path,
+            schema_marker=SCHEMA_MARKER,
+            producer_record={"v": 1, "parents": []},  # no 'node'
+        )
+    assert not (tmp_path / "stream_unitA" / "provenance").exists()
+    assert any("no 'node'" in m for m in caplog.messages)
+
+
+def test_write_stream_configs_no_producer_record_writes_no_provenance(tmp_path: Path):
+    write_stream_configs([{"name": "unitA"}], results_dir=tmp_path, schema_marker=SCHEMA_MARKER)
+    assert not (tmp_path / "stream_unitA" / "provenance").exists()
+
+
 # -------------------------------------------------------------- find_stream_config --
 
 

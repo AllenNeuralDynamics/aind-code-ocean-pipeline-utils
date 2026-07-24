@@ -1,13 +1,14 @@
 """Utilities for use in Code Ocean pipelines.
 
-Core primitives are re-exported at the package level. The rich-aware
-helpers in :mod:`.log` (``install_rich_handler``, ``build_progress``)
-require the optional ``[rich]`` extra and must be imported explicitly;
-:func:`attach_file_log` is stdlib-only and re-exported here. Likewise the
-:mod:`.metadata` helpers (``make_data_process``, ``append_process``,
-``emit_processing``) and the :mod:`.step` ``processing.json`` decorator
-(``capsule_step`` / ``processing_step``) require the optional ``[metadata]``
-extra (``aind-data-schema``) and are import-only.
+Core primitives are re-exported at the package level, including the schema-free
+provenance breadcrumb layer from :mod:`.records` (``record_step``, ``make_record``,
+``read_records``, ``frontier``, ``write_record``). The rich-aware helpers in
+:mod:`.log` (``install_rich_handler``, ``build_progress``) require the optional
+``[rich]`` extra and must be imported explicitly; :func:`attach_file_log` is
+stdlib-only and re-exported here. The :mod:`.metadata` authoring helpers
+(``make_data_process`` / ``write_processing``) require the optional ``[metadata]``
+extra (``aind-data-schema``) and are import-only; ``record_step`` uses them
+lazily and best-effort to author a shard's opaque ``DataProcess`` payload.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -22,6 +23,11 @@ from .io import (
     retry_on_oserror,
 )
 from .log import attach_file_log
+from .metadata_files import (
+    DEFAULT_INHERITED_METADATA,
+    find_metadata_file,
+    forward_metadata,
+)
 from .process import (
     GracefulExit,
     check_shutdown,
@@ -31,6 +37,15 @@ from .process import (
     shutdown_handler,
 )
 from .provenance import capsule_commit, package_version
+from .records import (
+    RECORD_VERSION,
+    RecordContext,
+    frontier,
+    make_record,
+    read_records,
+    record_step,
+    write_record,
+)
 from .role_dispatch import (
     Role,
     StreamConfigError,
@@ -49,9 +64,12 @@ except PackageNotFoundError:
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "DEFAULT_INHERITED_METADATA",
+    "RECORD_VERSION",
     "TRANSIENT_ERRNOS",
     "GracefulExit",
     "MemoryReporter",
+    "RecordContext",
     "Role",
     "StreamConfigError",
     "__version__",
@@ -63,19 +81,26 @@ __all__ = [
     "check_shutdown",
     "default_sanitize",
     "find_launcher_manifest",
+    "find_metadata_file",
     "find_stream_config",
     "find_worker_manifests",
+    "forward_metadata",
+    "frontier",
     "input_fingerprint",
     "install_shutdown_handlers",
     "is_shutdown_requested",
     "log_data_tree",
+    "make_record",
     "merge_manifests",
     "package_version",
     "parse_truthy",
+    "read_records",
+    "record_step",
     "reset_shutdown_state",
     "retry_on_oserror",
     "shutdown_handler",
     "start_memory_reporter",
     "submit_with_context",
+    "write_record",
     "write_stream_configs",
 ]

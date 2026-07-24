@@ -1,40 +1,43 @@
-"""Build a Code Ocean node's aind-data-schema ``processing.json`` incrementally.
+"""Author aind-data-schema ``DataProcess`` / ``Processing`` records (deferred use).
 
 Optional module — requires the ``[metadata]`` extra (``aind-data-schema``).
 Import it explicitly (it is *not* re-exported from the package root, since the
 core package is stdlib-only).
 
-Why this exists
----------------
-A Code Ocean pipeline is a Nextflow DAG, but no single capsule sees the whole
-graph, and the standard metadata aggregator chains standalone ``DataProcess``
-records in filesystem-discovery order — which has nothing to do with the real
-topology. The only place the true edges are knowable with *local* information
-is along the data-flow: a node's inputs **are** its DAG parents.
+Scope
+-----
+Per-node provenance in a live pipeline is emitted as **schema-free breadcrumbs**
+by :mod:`.records` — no aind-data-schema on that hot path. What remains here is
+the *authoring* side, used only when a compliant record is actually needed:
 
-So each node builds its ``processing.json`` from the ``processing.json`` files
-handed to it by its upstream nodes (read from ``/data``), appends its own
-``DataProcess`` wired to the *frontier* of the merged upstream graph, and writes
-the result to ``/results``. Fan-in (a node with several upstream
-``processing.json`` inputs) is a graph union plus an edge from the new node to
-each incoming branch's frontier. The terminal node then holds the complete,
-correct DAG. This is fully compatible with the existing aggregator, which
-preserves ``dependency_graph`` from any ``processing.json`` it receives.
+- :func:`make_data_process` builds one validated ``DataProcess`` (called by
+  :func:`aind_code_ocean_pipeline_utils.records.record_step` to author a shard's
+  opaque payload).
+- :func:`write_processing` serializes a fully-assembled ``Processing``.
+- :func:`make_derived_data_description` / :func:`write_data_description` author the
+  one metadata file the derived asset owns (deriving it from the input asset's data
+  description rather than forwarding it, which would misdescribe a different asset).
+
+These are the seeds of the deferred, best-effort *assembler* that turns a
+directory of breadcrumb shards into a compliant ``Processing`` (envelopes →
+``dependency_graph``, payloads → ``data_processes``), run only under duress
+against whatever schema version is current then. The old frontier-append over
+*parsed* upstream ``Processing`` objects (``read_processings`` / ``append_process``
+/ ``emit_processing``) — which required every capsule to agree on one
+aind-data-schema version — has been removed in favor of the breadcrumbs.
 
 Pairs with :mod:`aind_code_ocean_pipeline_utils.provenance` for stamping each
-``DataProcess`` with a commit hash / package version. Verified against
-aind-data-schema 2.7.1.
+``DataProcess`` with a commit hash / package version.
 """
 
 from __future__ import annotations
 
-import json
-import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from aind_data_schema.core.data_description import DataDescription
 from aind_data_schema.core.processing import (
     Code,
     DataProcess,
@@ -44,15 +47,12 @@ from aind_data_schema.core.processing import (
 )
 
 __all__ = [
-    "append_process",
-    "emit_processing",
     "make_data_process",
-    "read_processings",
+    "make_derived_data_description",
     "utcnow",
+    "write_data_description",
     "write_processing",
 ]
-
-_logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -103,7 +103,7 @@ def make_data_process(
         Processing vs Analysis stage.
     name : str, optional
         Unique node name. Required if this process will participate in a
-        dependency graph (i.e. for :func:`append_process`).
+        dependency graph.
     version : str, optional
         Code version (e.g. package version of the logic that ran).
     commit_hash : str, optional
@@ -138,143 +138,6 @@ def make_data_process(
     )
 
 
-def read_processings(input_dir: str | Path, *, pattern: str = "*processing.json") -> list[Processing]:
-    """Load upstream :class:`Processing` records handed to this node.
-
-    Recursively globs ``input_dir`` (Code Ocean mounts upstream outputs under
-    ``/data``), deduplicating by resolved path. Unreadable / invalid files are
-    skipped with a warning rather than raising, so a metadata-emit path never
-    crashes the capsule.
-
-    Parameters
-    ----------
-    input_dir : str or pathlib.Path
-        Directory to search (typically ``/data``).
-    pattern : str, default ``"*processing.json"``
-        Glob applied recursively.
-
-    Returns
-    -------
-    list[Processing]
-        Parsed upstream Processing objects (possibly empty).
-    """
-    root = Path(input_dir)
-    seen: set[Path] = set()
-    out: list[Processing] = []
-    for file_path in sorted(root.rglob(pattern)):
-        try:
-            key = file_path.resolve()
-        except OSError:
-            key = file_path
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            data = json.loads(file_path.read_text())
-            out.append(Processing.model_validate(data))
-        except Exception as exc:
-            _logger.warning("skipping unreadable processing.json %s: %s", file_path, exc)
-    return out
-
-
-def _dedup_codes(codes: Sequence[Code]) -> list[Code]:
-    """Deduplicate ``Code`` entries by ``(url, name, version)``, preserving order."""
-    seen: set[tuple[str | None, str | None, str | None]] = set()
-    out: list[Code] = []
-    for code in codes:
-        key = (code.url, code.name, code.version)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(code)
-    return out
-
-
-def append_process(
-    incoming: Sequence[Processing],
-    new: DataProcess,
-    *,
-    pipelines: Sequence[Code] | None = None,
-) -> Processing:
-    """Merge upstream graphs and append ``new`` at the frontier.
-
-    Builds a single :class:`Processing` whose ``dependency_graph`` is the union
-    of every incoming graph plus one node for ``new`` that depends on the
-    *frontier* of the merged graph — the set of upstream processes that nothing
-    else depends on yet (the sinks). A fan-in (several ``incoming`` graphs)
-    therefore connects ``new`` to the head of each branch. Duplicate process
-    names across branches (a diamond) are collapsed: the first record wins and
-    its dependency lists are unioned.
-
-    Parameters
-    ----------
-    incoming : Sequence[Processing]
-        Upstream Processing records (from :func:`read_processings`). Empty for
-        a source node.
-    new : DataProcess
-        This node's process. Must have a unique, non-``None`` ``name``.
-    pipelines : Sequence[Code], optional
-        Pipeline repositories to record; unioned with any carried by
-        ``incoming`` and deduplicated.
-
-    Returns
-    -------
-    Processing
-        The merged record with ``new`` appended.
-
-    Raises
-    ------
-    ValueError
-        If ``new.name`` is ``None``, if any incoming ``DataProcess`` lacks a
-        name, or if ``new.name`` already exists upstream.
-    """
-    data_processes: list[DataProcess] = []
-    graph: dict[str, list[str]] = {}
-
-    def _register(process: DataProcess, deps: Sequence[str]) -> None:
-        name = process.name
-        if name is None:
-            raise ValueError("encountered a DataProcess with no name; cannot graph it")
-        if name in graph:
-            for dep in deps:
-                if dep not in graph[name]:
-                    graph[name].append(dep)
-            return
-        data_processes.append(process)
-        graph[name] = list(deps)
-
-    for processing in incoming:
-        existing = processing.dependency_graph or {}
-        for process in processing.data_processes:
-            pname = process.name
-            if pname is None:
-                raise ValueError("incoming DataProcess has no name; cannot graph it")
-            _register(process, list(existing.get(pname, [])))
-
-    new_name = new.name
-    if new_name is None:
-        raise ValueError("new DataProcess must have a name to be added to the graph")
-    if new_name in graph:
-        raise ValueError(f"DataProcess name {new_name!r} already present upstream")
-
-    referenced = {dep for deps in graph.values() for dep in deps}
-    frontier = [name for name in graph if name not in referenced]
-    _register(new, frontier)
-
-    merged_pipelines: list[Code] = []
-    for processing in incoming:
-        merged_pipelines.extend(processing.pipelines or [])
-    if pipelines:
-        merged_pipelines.extend(pipelines)
-    deduped = _dedup_codes(merged_pipelines)
-
-    return Processing(
-        data_processes=data_processes,
-        dependency_graph=graph,
-        pipelines=deduped or None,
-    )
-
-
 def write_processing(processing: Processing, output_dir: str | Path) -> Path:
     """Write ``processing.json`` into ``output_dir`` via aind-data-schema.
 
@@ -297,36 +160,67 @@ def write_processing(processing: Processing, output_dir: str | Path) -> Path:
     return out / "processing.json"
 
 
-def emit_processing(
-    new: DataProcess,
+def make_derived_data_description(
+    parent: DataDescription | Mapping[str, Any],
+    process_name: str,
     *,
-    input_dir: str | Path,
-    output_dir: str | Path,
-    pipelines: Sequence[Code] | None = None,
-) -> Path:
-    """Read upstream graphs, append ``new``, and write ``processing.json``.
+    source_data: Sequence[str] | None = None,
+    **overrides: Any,
+) -> DataDescription:
+    """Derive a ``DataLevel.DERIVED`` :class:`DataDescription` from a parent asset.
 
-    Convenience one-call wrapper around :func:`read_processings`,
-    :func:`append_process`, and :func:`write_processing` for the common capsule
-    path.
+    Thin wrapper over ``DataDescription.from_data_description`` (which picks
+    ``from_raw`` / ``from_derived`` by the parent's ``data_level``). The parent's
+    institution, funding, investigators, project name, modalities, and subject id
+    are inherited; ``data_level`` becomes ``DERIVED`` and a derived name is
+    generated. This is the one metadata file to **author** for the produced asset
+    rather than forward — forwarding the parent's would misdescribe a different
+    asset.
 
     Parameters
     ----------
-    new : DataProcess
-        This node's process (must have a unique name).
-    input_dir : str or pathlib.Path
-        Where to read upstream ``processing.json`` files (typically ``/data``).
+    parent : DataDescription or Mapping[str, Any]
+        The input asset's data description, as an object or a parsed dict (validated
+        here). Validating an older-schema parent may raise; callers on an emit path
+        should treat this best-effort.
+    process_name : str
+        Name of the process that produced the derived asset (folded into the name).
+    source_data : Sequence[str], optional
+        Source asset name(s). Defaults to the parent's own name.
+    **overrides
+        Any ``DataDescription`` field to override on the derived record.
+
+    Returns
+    -------
+    DataDescription
+        A ``DERIVED`` data description.
+    """
+    parent_dd = parent if isinstance(parent, DataDescription) else DataDescription.model_validate(dict(parent))
+    return DataDescription.from_data_description(
+        parent_dd,
+        process_name,
+        source_data=list(source_data) if source_data else None,
+        **overrides,
+    )
+
+
+def write_data_description(data_description: DataDescription, output_dir: str | Path) -> Path:
+    """Write ``data_description.json`` into ``output_dir`` via aind-data-schema.
+
+    Parameters
+    ----------
+    data_description : DataDescription
+        The record to serialize.
     output_dir : str or pathlib.Path
-        Where to write the merged ``processing.json`` (typically a
-        subject-namespaced subdir of ``/results``).
-    pipelines : Sequence[Code], optional
-        Pipeline repositories to record.
+        Destination directory (created if needed); the file is always named
+        ``data_description.json`` per the aind-data-schema convention.
 
     Returns
     -------
     pathlib.Path
-        Path to the written ``processing.json``.
+        Path to the written ``data_description.json``.
     """
-    incoming = read_processings(input_dir)
-    processing = append_process(incoming, new, pipelines=pipelines)
-    return write_processing(processing, output_dir)
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    data_description.write_standard_file(output_directory=out)
+    return out / "data_description.json"

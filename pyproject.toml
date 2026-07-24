@@ -38,6 +38,7 @@ dev = [
     "interrogate",
     "rich>=13",
     "aind-data-schema>=2.7,<3",
+    "jsonschema>=4",
     "commitizen>=4.13.10",
 ]
 jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]

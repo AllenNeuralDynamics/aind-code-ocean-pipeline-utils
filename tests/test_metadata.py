@@ -1,23 +1,28 @@
 """Tests for the optional ``metadata`` module (requires ``[metadata]`` extra)."""
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 
 pytest.importorskip("aind_data_schema")
 
+from aind_data_schema.components.identifiers import Person
+from aind_data_schema.core.data_description import DataDescription, Funding
 from aind_data_schema.core.processing import (
     DataProcess,
     Processing,
     ProcessName,
 )
+from aind_data_schema_models.data_name_patterns import DataLevel
+from aind_data_schema_models.modalities import Modality
+from aind_data_schema_models.organizations import Organization
 
 from aind_code_ocean_pipeline_utils.metadata import (
-    append_process,
-    emit_processing,
     make_data_process,
-    read_processings,
+    make_derived_data_description,
     utcnow,
+    write_data_description,
     write_processing,
 )
 
@@ -41,73 +46,79 @@ def test_make_data_process_defaults_end_and_fields():
     assert proc.code.url == URL
 
 
-def test_source_node_has_empty_deps():
-    out = append_process([], dp("root"))
-    assert out.dependency_graph == {"root": []}
-    assert [p.name for p in out.data_processes] == ["root"]
+def test_make_data_process_records_experimenters_and_parameters():
+    proc = make_data_process(
+        process_type=ProcessName.OTHER,
+        code_url=URL,
+        experimenters=["a", "b"],
+        start=utcnow(),
+        name="p",
+        parameters={"k": 1},
+        notes="other requires notes",
+    )
+    assert proc.experimenters == ["a", "b"]
+    assert proc.code.parameters is not None
 
 
-def test_linear_chain_wires_to_frontier():
-    first = append_process([], dp("A"))
-    second = append_process([first], dp("B"))
-    assert second.dependency_graph == {"A": [], "B": ["A"]}
+def test_make_data_process_empty_experimenters_is_valid():
+    # experimenters is required but has no min_length -> [] validates.
+    proc = make_data_process(
+        process_type=ProcessName.OTHER,
+        code_url=URL,
+        experimenters=[],
+        start=utcnow(),
+        name="p",
+        notes="n",
+    )
+    assert proc.experimenters == []
 
 
-def test_fan_in_diamond_dedups_and_wires_both_heads():
-    # Two upstream branches that share node A: A->B and A->C
-    branch_ab = append_process([append_process([], dp("A"))], dp("B"))
-    # rebuild C off the same A (independent branch carrying A and C)
-    a_only = append_process([], dp("A"))
-    branch_ac = append_process([a_only], dp("C"))
-
-    merged = append_process([branch_ab, branch_ac], dp("D"))
-    g = merged.dependency_graph
-    assert g is not None
-    # A appears once despite being in both branches
-    assert [p.name for p in merged.data_processes] == ["A", "B", "C", "D"]
-    assert g["A"] == []
-    assert g["B"] == ["A"]
-    assert g["C"] == ["A"]
-    assert set(g["D"]) == {"B", "C"}  # new node attaches to both branch heads
+def raw_dd() -> DataDescription:
+    # A minimal valid RAW data description (mirrors the aind-data-schema example).
+    return DataDescription(
+        modalities=[Modality.ECEPHYS],
+        subject_id="123456",
+        creation_time=datetime(2022, 2, 21, 16, 30, 1, tzinfo=UTC),
+        institution=Organization.AIND,
+        investigators=[Person(name="Jane Doe")],
+        funding_source=[Funding(funder=Organization.AI)],
+        project_name="Example project",
+        data_level=DataLevel.RAW,
+    )
 
 
-def test_duplicate_new_name_raises():
-    upstream = append_process([], dp("A"))
-    with pytest.raises(ValueError, match="already present upstream"):
-        append_process([upstream], dp("A"))
+def test_make_derived_data_description_inherits_and_marks_derived():
+    parent = raw_dd()
+    derived = make_derived_data_description(parent, "ibl-preprocess")
+    assert derived.data_level == DataLevel.DERIVED
+    assert derived.institution == parent.institution  # inherited
+    assert [p.name for p in derived.investigators] == ["Jane Doe"]
+    assert derived.subject_id == "123456"
+    assert derived.source_data == [parent.name]  # defaults to parent name
 
 
-def test_missing_name_raises():
-    # The schema auto-fills name from process_type, so force a genuinely
-    # nameless DataProcess to exercise the guard.
-    nameless = dp("placeholder").model_copy(update={"name": None})
-    with pytest.raises(ValueError, match="must have a name"):
-        append_process([], nameless)
+def test_make_derived_data_description_accepts_dict_parent():
+    parent_dict = raw_dd().model_dump(mode="json")
+    derived = make_derived_data_description(parent_dict, "ibl-preprocess", source_data=["asset-A"])
+    assert derived.data_level == DataLevel.DERIVED
+    assert derived.source_data == ["asset-A"]
 
 
-def test_emit_processing_round_trip(tmp_path):
-    # node 1 (source): no upstream processing.json in its input dir
-    in1 = tmp_path / "in1"
-    in1.mkdir()
-    out1 = tmp_path / "out1"
-    path1 = emit_processing(dp("preprocess"), input_dir=in1, output_dir=out1)
-    assert path1 == out1 / "processing.json"
+def test_write_data_description_round_trip(tmp_path):
+    derived = make_derived_data_description(raw_dd(), "ibl-preprocess")
+    path = write_data_description(derived, tmp_path / "out")
+    assert path == tmp_path / "out" / "data_description.json"
+    loaded = DataDescription.model_validate(json.loads(path.read_text()))
+    assert loaded.data_level == DataLevel.DERIVED
 
-    # node 2 consumes node 1's output as its input
-    out2 = tmp_path / "out2"
-    emit_processing(dp("register"), input_dir=out1, output_dir=out2)
 
-    loaded = Processing.model_validate(json.loads((out2 / "processing.json").read_text()))
+def test_write_processing_round_trip(tmp_path):
+    processing = Processing(
+        data_processes=[dp("preprocess"), dp("register")],
+        dependency_graph={"preprocess": [], "register": ["preprocess"]},
+    )
+    path = write_processing(processing, tmp_path / "out")
+    assert path == tmp_path / "out" / "processing.json"
+    loaded = Processing.model_validate(json.loads(path.read_text()))
     assert loaded.dependency_graph == {"preprocess": [], "register": ["preprocess"]}
     assert isinstance(loaded.data_processes[0], DataProcess)
-
-
-def test_read_processings_skips_unreadable(tmp_path):
-    good = tmp_path / "good"
-    good.mkdir()
-    write_processing(append_process([], dp("ok")), good)
-    # a bogus file matching the glob must be skipped, not raise
-    (good / "broken_processing.json").write_text("{ not valid json")
-    procs = read_processings(good)
-    assert len(procs) == 1
-    assert procs[0].data_processes[0].name == "ok"
