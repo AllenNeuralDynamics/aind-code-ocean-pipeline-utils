@@ -35,6 +35,8 @@ uv run codespell --check-filenames
 
 ```
 
+`./scripts/run_linters_and_checks.sh -c` must pass before every commit. The script does not stop at the first failure and its exit status reflects only pytest, so read the output of every stage (ruff, mypy, interrogate, codespell, pytest). Its first step, `ruff format`, rewrites files, so stage those changes too.
+
 Always use `uv run` to execute commands, `uv add` to add dependencies, and `uv sync` to set up the environment. Never use bare `pip` or `python`.
 
 ## Architecture

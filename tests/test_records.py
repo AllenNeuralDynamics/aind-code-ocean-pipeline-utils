@@ -292,9 +292,11 @@ def test_record_step_strips_self_from_explicit_parents(tmp_path: Path):
 
 def test_record_step_body_failure_emits_nothing(tmp_path: Path):
     out = tmp_path / "out"
-    with pytest.raises(RuntimeError, match="boom"):
-        with record_step("A", process_type="Other", incoming_dir=tmp_path / "empty", output_dir=out):
-            raise RuntimeError("boom")
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        record_step("A", process_type="Other", incoming_dir=tmp_path / "empty", output_dir=out),
+    ):
+        raise RuntimeError("boom")
     assert not (out / "provenance").exists()
 
 

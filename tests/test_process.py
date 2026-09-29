@@ -76,16 +76,15 @@ def test_graceful_exit_escapes_broad_except_exception():
     with pytest.raises(GracefulExit):
         try:
             check_shutdown()
-        except Exception:  # pragma: no cover - must not execute
+        except Exception:  # noqa: BLE001  # pragma: no cover - must not execute
             pytest.fail("GracefulExit should not be caught by `except Exception:`")
 
 
 def test_shutdown_handler_context_exits_with_128_plus_signum():
     install_shutdown_handlers()
     os.kill(os.getpid(), signal.SIGTERM)
-    with pytest.raises(SystemExit) as excinfo:
-        with shutdown_handler():
-            check_shutdown()
+    with pytest.raises(SystemExit) as excinfo, shutdown_handler():
+        check_shutdown()
     assert excinfo.value.code == 128 + int(signal.SIGTERM)
 
 
@@ -94,9 +93,8 @@ def test_shutdown_handler_invokes_callback_with_signum():
     received: list[int] = []
 
     os.kill(os.getpid(), signal.SIGTERM)
-    with pytest.raises(SystemExit):
-        with shutdown_handler(on_shutdown=received.append):
-            check_shutdown()
+    with pytest.raises(SystemExit), shutdown_handler(on_shutdown=received.append):
+        check_shutdown()
     assert received == [int(signal.SIGTERM)]
 
 
@@ -107,9 +105,8 @@ def test_shutdown_handler_callback_exception_does_not_override_exit_code():
         raise RuntimeError("cleanup failed")
 
     os.kill(os.getpid(), signal.SIGTERM)
-    with pytest.raises(SystemExit) as excinfo:
-        with shutdown_handler(on_shutdown=_boom):
-            check_shutdown()
+    with pytest.raises(SystemExit) as excinfo, shutdown_handler(on_shutdown=_boom):
+        check_shutdown()
     assert excinfo.value.code == 128 + int(signal.SIGTERM)
 
 
@@ -123,9 +120,8 @@ def test_shutdown_handler_resets_state_on_clean_exit():
 def test_shutdown_handler_custom_exit_code_base():
     install_shutdown_handlers()
     os.kill(os.getpid(), signal.SIGINT)
-    with pytest.raises(SystemExit) as excinfo:
-        with shutdown_handler(exit_code_base=200):
-            check_shutdown()
+    with pytest.raises(SystemExit) as excinfo, shutdown_handler(exit_code_base=200):
+        check_shutdown()
     assert excinfo.value.code == 200 + int(signal.SIGINT)
 
 
@@ -166,5 +162,5 @@ def test_double_signal_escalates_to_os_exit():
         raise SystemExit(0)
         """
     )
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=10)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=10, check=False)
     assert result.returncode == 128 + int(signal.SIGTERM), result.stderr.decode()

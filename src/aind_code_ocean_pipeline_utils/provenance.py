@@ -122,8 +122,7 @@ def _normalize_remote_url(url: str) -> str:
     scp = re.match(r"^git@([^:]+):(.+)$", url)
     if scp:
         url = f"https://{scp.group(1)}/{scp.group(2)}"
-    if url.endswith(".git"):
-        url = url[: -len(".git")]
+    url = url.removesuffix(".git")
     return url
 
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any
 
 __all__ = ["canonical_params", "input_fingerprint"]
@@ -39,7 +40,7 @@ def _validate_json(value: Any, path: str) -> None:
     emits without telling the caller *where* the bad value lives.
     """
     if value is None or isinstance(value, (bool, int, float, str)):
-        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        if isinstance(value, float) and not math.isfinite(value):
             raise TypeError(f"value at {path} is not JSON-standard: {value!r}")
         return
     if isinstance(value, dict):

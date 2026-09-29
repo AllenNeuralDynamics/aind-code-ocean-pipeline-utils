@@ -206,9 +206,8 @@ def test_build_progress_requires_installed_handler_without_console():
     prior = list(root.handlers)
     root.handlers = [h for h in root.handlers if not getattr(h, "_aind_pipeline_utils_rich_handler", False)]
     try:
-        with pytest.raises(RuntimeError, match="install_rich_handler"):
-            with build_progress(5):
-                pass
+        with pytest.raises(RuntimeError, match="install_rich_handler"), build_progress(5):
+            pass
     finally:
         root.handlers = prior
 
