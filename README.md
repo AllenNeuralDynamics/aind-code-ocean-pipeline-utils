@@ -8,327 +8,79 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border.json)](https://github.com/copier-org/copier)
 
-Small, focused utilities for long-running AIND Code Ocean capsules. Each
-module addresses a single failure mode that recurs in pipeline code:
-sudden termination, flaky I/O, stale cache reuse, logging eaten by rich
-progress bars, and context variables lost across thread-pool submits.
-
-Every module but two has **no runtime dependencies** beyond the standard
-library. [`log`](#log--rich-aware-logging-optional-rich-extra) requires the
-`[rich]` extra, and `metadata`, which writes `processing.json`, requires the
-`[metadata]` extra.
+Utilities for AIND Code Ocean capsules. They assemble a pipeline's
+`processing.json`, lay a capsule out as launcher, workers, and aggregator, and
+guard long runs against termination, flaky I/O, stale caches, logs lost under
+progress bars, and context lost across thread pools.
 
 ## Installation
 
+The core is stdlib-only; two extras add dependencies.
+
 ```bash
 pip install aind-code-ocean-pipeline-utils
-# with rich-aware logging
-pip install aind-code-ocean-pipeline-utils[rich]
-# with processing.json assembly (aind-data-schema)
-pip install aind-code-ocean-pipeline-utils[metadata]
+pip install "aind-code-ocean-pipeline-utils[rich]"      # log: rich handler, progress bars
+pip install "aind-code-ocean-pipeline-utils[metadata]"  # metadata: aind-data-schema
 ```
 
-## Modules at a glance
-
-| Module            | Purpose                                                          | Deps        |
-|-------------------|------------------------------------------------------------------|-------------|
-| `process`         | Graceful SIGINT/SIGTERM handling with safe-point shutdown        | stdlib      |
-| `io`              | Retry on transient OS errors; atomic file writes                 | stdlib      |
-| `cache`           | Deterministic fingerprints for cache keys and resume validation  | stdlib      |
-| `threading_utils` | ThreadPoolExecutor submit that propagates `contextvars`          | stdlib      |
-| `role_dispatch`   | Launcher / worker / aggregator skeleton for CO pipeline capsules | stdlib      |
-| `diagnostics`     | `/data` tree + RSS/cgroup reporting for post-mortem debugging    | stdlib      |
-| `provenance`      | `capsule_commit()` + `package_version()` for manifest stamping   | stdlib      |
-| `cli`             | `parse_truthy()` for CO app-panel string parameters              | stdlib      |
-| `log`             | Rich logging + `build_progress` / `make_progress_callback`       | `[rich]`    |
-| `records`         | `record_step`: each capsule's provenance record, carried downstream | stdlib |
-| `metadata`        | Assemble `processing.json`; author `data_description.json`       | `[metadata]` |
-| `metadata_files`  | Forward `subject.json` etc. verbatim; read `data_description`    | stdlib      |
-
-Core primitives are re-exported at the package level:
+## A capsule, end to end
 
 ```python
+from pathlib import Path
+
 from aind_code_ocean_pipeline_utils import (
-    GracefulExit,
     check_shutdown,
-    shutdown_handler,
-    retry_on_oserror,
-    atomic_json_write,
-    atomic_write_text,
-    input_fingerprint,
-    canonical_params,
-    submit_with_context,
-    Role,
-    StreamConfigError,
-    write_stream_configs,
-    find_stream_config,
-    find_worker_manifests,
-    find_launcher_manifest,
-    merge_manifests,
-    log_data_tree,
-    start_memory_reporter,
-    capsule_commit,
-    package_version,
-    parse_truthy,
-    record_step,
     forward_metadata,
-    read_data_description_fields,
+    log_data_tree,
+    package_version,
+    record_step,
+    shutdown_handler,
 )
-```
-
-`log` and `metadata` must be imported from their submodules, which keeps the
-top-level import stdlib-only:
-
-```python
 from aind_code_ocean_pipeline_utils.log import install_rich_handler
 from aind_code_ocean_pipeline_utils.metadata import write_assembled_processing
+
+install_rich_handler()
+log_data_tree(Path("/data"))  # what Code Ocean mounted
+with shutdown_handler():  # SIGTERM exits at the next check_shutdown()
+    with record_step("sort", process_type="Spike sorting", version=package_version("my-package")):
+        for shard in shards:
+            check_shutdown()
+            process(shard)
+forward_metadata("/data", "/results")  # subject.json, procedures.json, ...
+write_assembled_processing("/data", "/results")  # in the pipeline's final capsule only
 ```
 
-## `process` — graceful shutdown
+## What's in the package
 
-Main loops poll `check_shutdown()` at safe points (shard boundaries,
-between I/O operations) rather than aborting mid-kernel. The context
-manager translates a shutdown signal into `sys.exit(128 + signum)`,
-matching the Unix killed-by-signal convention (130 for SIGINT, 143 for
-SIGTERM).
+| To | Use |
+| --- | --- |
+| [write a pipeline's `processing.json`](#the-final-capsule-writes-processingjson) | `metadata.write_assembled_processing` |
+| [record this capsule's step](#opted-in-capsules-record-their-own-step) | `record_step` |
+| [carry provenance across a fan-out](#a-launcher-hands-its-record-to-fan-out-workers) | `step.fanout_shards()` |
+| [copy or author the other metadata files](#the-other-metadata-files-are-forwarded-or-authored) | `forward_metadata`, `metadata.make_derived_data_description` |
+| [stamp a commit or package version](#commit-and-version-stamps) | `capsule_commit`, `package_version` |
+| [fan work out and merge the results](#launcher-workers-aggregator) | `write_stream_configs`, `find_stream_config`, `merge_manifests` |
+| [read a boolean App Panel parameter](#app-panel-parameters) | `parse_truthy` |
+| [stop cleanly on SIGTERM](#graceful-shutdown) | `shutdown_handler`, `check_shutdown` |
+| [retry flaky I/O, write files atomically](#retries-and-atomic-writes) | `retry_on_oserror`, `atomic_json_write` |
+| [tell whether cached output is stale](#input-fingerprints) | `input_fingerprint` |
+| [keep `contextvars` in thread-pool workers](#context-across-thread-pools) | `submit_with_context` |
+| [log under progress bars, keep a log file](#logging-under-progress-bars) | `log.install_rich_handler`, `log.build_progress`, `attach_file_log` |
+| [see the mounts and memory use](#mounts-and-memory) | `log_data_tree`, `start_memory_reporter` |
 
-```python
-from aind_code_ocean_pipeline_utils import check_shutdown, shutdown_handler
+Everything imports from `aind_code_ocean_pipeline_utils` except the `log.` and
+`metadata.` names, which live in submodules so the package root needs neither extra.
 
-with shutdown_handler():
-    for shard in shards:
-        check_shutdown()  # raises GracefulExit on SIGINT/SIGTERM
-        process(shard)
-```
+## Recording provenance and processing.json
 
-`GracefulExit` inherits from `BaseException` — consumer code's broad
-`except Exception:` blocks cannot accidentally swallow it. A second
-signal of the same kind escalates via `os._exit` so a stuck cleanup
-path cannot block termination indefinitely.
+Every AIND asset should carry a `processing.json`: the steps that produced it, and
+a `dependency_graph` saying which fed which. No capsule sees the whole pipeline,
+but each sees its inputs, which are its parents. So each capsule that opts in
+records its own step, the records travel with the data, and the final capsule
+assembles them. A capsule that never opts in still appears if it writes its own
+`processing.json`.
 
-## `io` — retry and atomic writes
-
-```python
-from aind_code_ocean_pipeline_utils import (
-    retry_on_oserror,
-    atomic_json_write,
-    atomic_write_text,
-    TRANSIENT_ERRNOS,
-)
-
-download = retry_on_oserror(_raw_download, retries=5)
-payload = download(url)
-
-atomic_json_write(out_path, payload)
-
-with atomic_write_text(log_path) as f:
-    f.write("...")
-```
-
-`retry_on_oserror` uses a deliberately narrow `TRANSIENT_ERRNOS` set
-(EIO, EAGAIN, EBUSY, network errnos). Permanent errors like `ENOENT`
-or `EACCES` surface immediately rather than hiding config mistakes
-behind minutes of exponential backoff. Callers with different failure
-models can union in additional codes at the call site.
-
-`atomic_write_text` writes to a sibling temp file, fsyncs, and uses
-`os.replace` for cross-platform atomic rename. The destination is
-never left half-written.
-
-## `cache` — input fingerprints
-
-```python
-from aind_code_ocean_pipeline_utils import input_fingerprint
-
-fp = input_fingerprint({"window": 0.01, "channels": [0, 1, 2]})
-# -> "sha256:3f1c..."
-```
-
-Equal inputs — regardless of key insertion order — produce equal
-fingerprints. The `sha256:` prefix leaves room to change the algorithm
-later without breaking consumers that string-compare fingerprints.
-
-Non-JSON values raise `TypeError` with a message identifying the
-offending key path. Callers coerce at the call site (`Path → str`,
-`ndarray → list` with a size ceiling) to keep fingerprints
-reproducible across Python versions.
-
-## `threading_utils` — contextvar propagation
-
-`ThreadPoolExecutor.submit(fn, ...)` runs `fn` on a worker with an
-*empty* context: any `ContextVar`-backed setting (`scipy.fft.set_workers`,
-`numpy.errstate`, custom request-ID / feature-flag vars) silently
-no-ops in the worker. `submit_with_context` copies the caller's
-context per submit so worker settings match the caller.
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-from aind_code_ocean_pipeline_utils import submit_with_context
-
-with ThreadPoolExecutor() as pool:
-    future = submit_with_context(pool, worker, arg1, arg2)
-```
-
-The copy is per submit, not once and reused — `Context.run` raises
-`RuntimeError` if the same `Context` is active on two threads
-concurrently.
-
-## `role_dispatch` — launcher / worker / aggregator skeleton
-
-Most embarrassingly-parallel AIND processing capsules follow the same
-three-role shape: the launcher discovers items and writes one
-`config.json` per item under `/results/stream_<safe>/`; CO's Flatten
-fan-out stages each directory as a distinct worker input; the
-aggregator Collects and merges per-worker manifests.
-
-```python
-from aind_code_ocean_pipeline_utils import (
-    Role,
-    StreamConfigError,
-    write_stream_configs,
-    find_stream_config,
-    find_worker_manifests,
-    find_launcher_manifest,
-    merge_manifests,
-)
-
-MARKER = "_mycapsule_stream_config"
-
-# Launcher
-write_stream_configs(
-    items,
-    results_dir=Path("/results"),
-    schema_marker=MARKER,
-)
-
-# Worker — finds exactly one staged config anywhere under /data
-cfg_path, cfg = find_stream_config(Path("/data"), schema_marker=MARKER)
-
-# Aggregator
-workers = find_worker_manifests(Path("/data"))
-launcher = find_launcher_manifest(Path("/data"))
-merged = merge_manifests(m for _, m in workers)  # {"built": [...], "skipped": [...]}
-```
-
-Workers detect their config by a marker key in the JSON body, never by
-path shape — CO's Flatten + Target Map Path combinations produce
-unpredictable nesting. `find_stream_config` raises `StreamConfigError`
-(with `paths` attribute) on zero or ambiguous matches; both are
-terminal for the worker.
-
-## `diagnostics` — first-log-line mount and memory reporting
-
-```python
-from aind_code_ocean_pipeline_utils import log_data_tree, start_memory_reporter
-
-log_data_tree(Path("/data"))  # mount shape visible in log on startup
-reporter = start_memory_reporter()  # daemon thread, logs RSS + cgroup limit
-# ... worker runs ...
-reporter.stop()
-```
-
-`log_data_tree` uses `os.walk(followlinks=True)` so CO's staged symlink
-chains get traversed; depth is bounded so zarr chunk trees don't flood
-the log. `start_memory_reporter` logs peak approach-to-limit, which is
-the only signal that survives an OOM SIGKILL (no `except` block runs;
-stdout isn't flushed) — enough to distinguish OOM from spot reclamation
-from application errors in postmortems.
-
-## `provenance` — manifest stamping
-
-```python
-from aind_code_ocean_pipeline_utils import capsule_commit, package_version
-
-manifest = {
-    "capsule_commit": capsule_commit(),  # env var, then `git rev-parse HEAD`
-    "package_version": package_version("my-package"),
-    # ... pipeline output ...
-}
-```
-
-`capsule_commit` checks `CO_COMMIT` / `GIT_COMMIT` / `COMMIT_ID` env
-vars in order, then falls back to `git -C /code rev-parse HEAD`.
-Returns the full 40-character hash or `None` — never raises, so
-manifest-emit paths can stamp unconditionally. `package_version` is a
-thin wrapper over `importlib.metadata.version` that returns `None` on
-`PackageNotFoundError`.
-
-## `cli` — app-panel parameter parsing
-
-```python
-from aind_code_ocean_pipeline_utils import parse_truthy
-
-disable_fast_filter = parse_truthy(args.disable_fast_filter)
-```
-
-Code Ocean's app panel passes parameters as strings when
-`named_parameters: true`, so bool flags (argparse `store_true`, tyro
-`--flag`/`--no-flag`) don't round-trip. `parse_truthy` accepts
-`{"true","yes","y","t"}` (case-insensitive) and any numeric string
-whose value is non-zero (`"1"`, `"42"`, `"3.14"`). Everything else
-— including `"0"`, `"0.0"`, `"false"`, and the empty string — is `False`.
-
-## `log` — rich-aware logging (optional `[rich]` extra)
-
-`rich.progress.Progress` repaints its live area 2–10 times per second.
-If `logging` emits a record from inside a `with Progress():` block
-*without* going through rich, the next tick paints over the tail of
-the log output — the line that tells you *what* went wrong silently
-disappears. Sharing a single `Console` between the `RichHandler` and
-`Progress` serializes the two.
-
-```python
-from aind_code_ocean_pipeline_utils.log import install_rich_handler
-from rich.progress import Progress
-
-console = install_rich_handler()
-with Progress(console=console) as progress:  # same console!
-    ...
-```
-
-Pass the returned `Console` to any `Progress` / `Live` instance in the
-process. A separate `Console` reintroduces the bug.
-
-### Two-row progress helper
-
-`build_progress` sets up the common pattern of an overall-item counter
-plus a per-item progress bar, reusing the `Console` installed above so
-log output and progress ticks don't fight:
-
-```python
-from aind_code_ocean_pipeline_utils.log import (
-    build_progress,
-    install_rich_handler,
-    make_progress_callback,
-)
-
-install_rich_handler()  # must come first
-
-with build_progress(len(items)) as (progress, overall, item):
-    for it in items:
-        progress.reset(item, total=it.size, description=it.name, visible=True)
-        cb = make_progress_callback(progress, item)
-        do_work(it, on_progress=cb)
-        progress.advance(overall)
-```
-
-`build_progress` raises `RuntimeError` if `install_rich_handler` hasn't
-been called (unless you pass `console=` explicitly) — keeps the
-shared-`Console` invariant honest.
-
-## `records` + `metadata` — provenance and `processing.json`
-
-Every AIND data asset should carry a `processing.json`: the steps that produced it,
-and a `dependency_graph` saying which step fed which. In a Code Ocean pipeline no
-capsule sees the whole graph, but each one sees its inputs, and its inputs are its
-parents. So each capsule that opts in writes a small record of its own step, the
-records travel with the data, and the final capsule assembles them into
-`processing.json`. Capsules that never opt in are still covered wherever they write
-a `processing.json` of their own.
-
-### The final capsule writes `processing.json`
-
-This is the only call a pipeline needs (it requires the `[metadata]` extra):
+### The final capsule writes processing.json
 
 ```python
 from aind_code_ocean_pipeline_utils.metadata import write_assembled_processing
@@ -336,61 +88,43 @@ from aind_code_ocean_pipeline_utils.metadata import write_assembled_processing
 write_assembled_processing("/data", "/results")  # -> /results/processing.json
 ```
 
-It reads the provenance records under `/data` and `/results` and every upstream
-`processing.json` under `/data`, then writes one validated record whose
-`dependency_graph` is keyed by step name. With no other capsule opted in, it
-rebuilds the graph that upstream capsules wrote themselves.
-
-A step that cannot be recovered in full becomes a placeholder `DataProcess` with a
-`notes` field saying why, so the graph stays connected. That happens when a step is
-named as a parent but left no record, or when it was recorded under a schema
-version the installed aind-data-schema rejects. The call never raises: on failure
-it logs a warning and returns `None`. For the `Processing` object itself, call
-`assemble_processing("/data", "/results")`.
+It reads the records and upstream `processing.json` files under `/data`, plus
+this capsule's own records in `/results`, so call it after this capsule's
+`record_step` block. A step it cannot recover in full, such as a parent that left
+no record or a step recorded under a schema version the installed aind-data-schema
+rejects, becomes a placeholder whose `notes` say why. The call logs a failure and
+returns `None` rather than raising; `assemble_processing` returns the `Processing`
+without writing it.
 
 ### Opted-in capsules record their own step
 
 ```python
-from aind_code_ocean_pipeline_utils import package_version, record_step
-
 with record_step(
     "mri-registration",  # unique node id in the pipeline
-    process_type="Image atlas alignment",  # an aind-data-schema ProcessName value
+    process_type="Image atlas alignment",  # a ProcessName value; any other becomes "Other"
     version=package_version("my-package"),
 ) as step:
     step.parameters = {"mask_dilate": 4}  # values known only at runtime
-    ...  # the work
+    ...
 ```
 
-When the block exits cleanly, `record_step` writes
-`/results/provenance/mri-registration.json` next to copies of every upstream
-record. If the block raises, the exception propagates and nothing is written.
-Provenance errors are only logged, so a metadata problem never fails the run.
+On a clean exit, `record_step` writes `/results/provenance/mri-registration.json`
+beside copies of every upstream record; if the block raises, it writes nothing.
+Parents are inferred from what arrives in `/data`, so a capsule never states its
+position in the DAG. `code_url` and `commit_hash` come from the `/code` checkout,
+but `version` must be passed. Without the `[metadata]` extra, the record keeps
+the step's place in the graph and loses its details.
 
-- Parents are inferred from what arrives in `/data`: provenance records, plus the
-  steps of any upstream `processing.json`. A capsule never names its position in the
-  DAG. Pass `parents=[...]` only to override.
-- Each edge must carry `provenance/`. Records travel in each capsule's
-  `/results/provenance/`, so a Pipeline Builder edge that maps only part of
-  `/results` must include that directory.
-- `process_type` takes a `ProcessName` value such as `"Spike sorting"`. Any
-  other label becomes `Other`, with the label kept in `notes`.
-- `code_url` and `commit_hash` come from the `/code` git checkout and Code Ocean
-  environment variables. `version` is not derived, so pass it.
-- `node` must be unique across the pipeline, so a fan-out worker includes its unit
-  in it, e.g. `f"sort-{probe}"`.
-- The final capsule can record its own step too: call `write_assembled_processing` after its
-  block exits; it reads `/results/provenance/` as well.
+Two wiring rules hold. Every pipeline edge must carry `/results/provenance/`, and
+a fan-out worker's node id must include its unit, as in `f"sort-{probe}"`.
 
 ### A launcher hands its record to fan-out workers
 
-A Flatten fan-out gives each worker only its own `stream_<name>/` directory, so a
-worker never sees the launcher's `/results/provenance/`. Pass the launcher's
-records to `write_stream_configs`, which copies them into every stream directory:
+A Flatten fan-out gives each worker only its own `stream_<name>/` directory, so
+the launcher writes its records into each one:
 
 ```python
 with record_step("discover", process_type="Other", run_experimenters=["Jane Doe"]) as step:
-    items = discover_items()
     write_stream_configs(
         items,
         results_dir=Path("/results"),
@@ -399,22 +133,139 @@ with record_step("discover", process_type="Other", run_experimenters=["Jane Doe"
     )
 ```
 
-Each worker then infers `discover` as its parent. `run_experimenters` is set once,
-here. At assembly it fills every step of this run that names no experimenters of
-its own. A run-level `pipeline={"name": ..., "code": {"url": ...}}` block works the
-same way and fills `Processing.pipelines`.
+Each worker then infers `discover` as its parent. At assembly, `run_experimenters`
+fills every step of the run that names none, and a
+`pipeline={"name": ..., "code": {"url": ...}}` block fills `Processing.pipelines`.
 
 ### The other metadata files are forwarded or authored
 
-`processing.json` is one file of several. `forward_metadata("/data", "/results")`
-copies `subject.json`, `procedures.json`, `instrument.json`, and `acquisition.json`
-verbatim. The derived asset's own `data_description.json` must be authored rather
-than copied, with `make_derived_data_description` and `write_data_description`, or
-from the schema-agnostic fields that `read_data_description_fields` returns.
+`forward_metadata("/data", "/results")` copies `subject.json`, `procedures.json`,
+`instrument.json`, and `acquisition.json` verbatim. The derived asset's
+`data_description.json` describes a new asset, so it is authored instead, with
+`metadata.make_derived_data_description` or from the fields
+`read_data_description_fields` extracts from any schema version.
 
-aind-data-schema is imported only when a step's record is written and at assembly.
-Without the `[metadata]` extra, `record_step` still writes the step's place in the
-graph, and the assembler later turns it into a placeholder.
+### Commit and version stamps
+
+`capsule_commit()` reads `CO_COMMIT`, `GIT_COMMIT`, or `COMMIT_ID`, then falls
+back to `git -C /code rev-parse HEAD`. `package_version(name)` wraps
+`importlib.metadata.version`. Both return `None` rather than raise, so a manifest
+can be stamped unconditionally.
+
+## Structuring a pipeline capsule
+
+### Launcher, workers, aggregator
+
+Most parallel AIND capsules take three roles. The launcher writes one
+`config.json` per item under `/results/stream_<name>/`, Code Ocean's Flatten hands
+each directory to its own worker, and the aggregator merges the workers'
+manifests. `Role` names these three, plus `MONOLITH` for a capsule that runs all
+of them in one process.
+
+```python
+MARKER = "_mycapsule_stream_config"
+
+# Launcher
+write_stream_configs(items, results_dir=Path("/results"), schema_marker=MARKER)
+
+# Worker: exactly one staged config anywhere under /data
+cfg_path, cfg = find_stream_config(Path("/data"), schema_marker=MARKER)
+
+# Aggregator
+workers = find_worker_manifests(Path("/data"))
+launcher = find_launcher_manifest(Path("/data"))
+merged = merge_manifests(m for _, m in workers)  # {"built": [...], "skipped": [...]}
+```
+
+A worker finds its config by the marker key in the JSON, not by path, because
+Flatten and Target Map Path nest inputs unpredictably. `find_stream_config` raises
+`StreamConfigError`, listing the candidate `paths`, on zero or several matches.
+
+### App Panel parameters
+
+With `named_parameters: true`, the App Panel passes every parameter as a string,
+so a boolean flag does not survive. `parse_truthy(args.flag)` reads one back:
+`true`, `yes`, `y`, `t` (any case) and non-zero numbers are `True`; everything
+else, including `"0"`, `"false"`, and `""`, is `False`.
+
+## Surviving long runs
+
+### Graceful shutdown
+
+```python
+with shutdown_handler():
+    for shard in shards:
+        check_shutdown()  # raises GracefulExit after SIGINT/SIGTERM
+        process(shard)
+```
+
+A signal only sets a flag, so work stops at the next `check_shutdown()` rather
+than mid-write, and the process exits with `128 + signum` (143 for SIGTERM).
+`GracefulExit` inherits from `BaseException`, so `except Exception:` cannot
+swallow it. A second signal exits at once through `os._exit`.
+
+### Retries and atomic writes
+
+```python
+download = retry_on_oserror(_raw_download, retries=5)
+atomic_json_write(out_path, download(url))
+```
+
+`retry_on_oserror` retries only `TRANSIENT_ERRNOS` (EIO, EAGAIN, EBUSY, network
+errnos); pass `transient_errnos=` to widen it. A permanent error such as `ENOENT`
+raises at once instead of hiding a config mistake behind minutes of backoff.
+`atomic_json_write` and `atomic_write_text` write a temp file, fsync it, and
+`os.replace` it over the destination, so no reader sees a half-written file.
+
+### Input fingerprints
+
+`input_fingerprint({"window": 0.01, "channels": [0, 1, 2]})` returns
+`"sha256:…"`, equal for equal inputs in any key order. Store it beside cached
+output and compare on resume. A non-JSON value raises `TypeError` naming its key
+path, so coerce `Path` or `ndarray` at the call site.
+
+### Context across thread pools
+
+`ThreadPoolExecutor.submit` runs its function in an empty context, so a
+`ContextVar` setting such as `scipy.fft.set_workers` silently lapses in the
+worker. `submit_with_context(pool, fn, *args)` copies the caller's context for
+each submit; one shared copy would raise `RuntimeError` once two threads ran it.
+
+## Seeing what happened
+
+### Logging under progress bars
+
+A rich `Progress` repaints several times a second, painting over any log line
+that bypassed rich, often the tail of a traceback. `install_rich_handler`
+(`[rich]` extra) routes logging through rich and returns its `Console`; pass that
+console to every `Progress`.
+
+```python
+from aind_code_ocean_pipeline_utils.log import build_progress, install_rich_handler, make_progress_callback
+
+install_rich_handler()
+with build_progress(len(items)) as (progress, overall, item):  # uses the installed console
+    for it in items:
+        progress.reset(item, total=it.size, description=it.name, visible=True)
+        do_work(it, on_progress=make_progress_callback(progress, item))
+        progress.advance(overall)
+```
+
+`attach_file_log(Path("/results/run.log"))` adds a file handler beside the
+console one, so the log survives the run in `/results`. It needs no extra.
+
+### Mounts and memory
+
+```python
+log_data_tree(Path("/data"))
+reporter = start_memory_reporter()  # logs RSS against the cgroup limit every 15 s
+...
+reporter.stop()
+```
+
+`log_data_tree` follows Code Ocean's symlinked mounts to a bounded depth. An OOM
+kill runs no `except` block and flushes no output, so the reporter's last line is
+what tells an OOM apart from a spot reclamation afterwards.
 
 ## Development
 
@@ -437,4 +288,4 @@ required to preserve.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).
