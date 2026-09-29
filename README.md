@@ -13,10 +13,10 @@ module addresses a single failure mode that recurs in pipeline code:
 sudden termination, flaky I/O, stale cache reuse, logging eaten by rich
 progress bars, and context variables lost across thread-pool submits.
 
-Core modules (`process`, `io`, `cache`, `threading_utils`) have **no
-runtime dependencies** beyond the standard library. The optional
-[`log`](#log--rich-aware-logging-optional-rich-extra) module requires
-the `[rich]` extra.
+Every module but two has **no runtime dependencies** beyond the standard
+library. [`log`](#log--rich-aware-logging-optional-rich-extra) requires the
+`[rich]` extra, and `metadata`, which writes `processing.json`, requires the
+`[metadata]` extra.
 
 ## Installation
 
@@ -24,6 +24,8 @@ the `[rich]` extra.
 pip install aind-code-ocean-pipeline-utils
 # with rich-aware logging
 pip install aind-code-ocean-pipeline-utils[rich]
+# with processing.json assembly (aind-data-schema)
+pip install aind-code-ocean-pipeline-utils[metadata]
 ```
 
 ## Modules at a glance
@@ -39,31 +41,47 @@ pip install aind-code-ocean-pipeline-utils[rich]
 | `provenance`      | `capsule_commit()` + `package_version()` for manifest stamping   | stdlib      |
 | `cli`             | `parse_truthy()` for CO app-panel string parameters              | stdlib      |
 | `log`             | Rich logging + `build_progress` / `make_progress_callback`       | `[rich]`    |
-| `metadata`        | Build a node's aind-data-schema `processing.json`, wiring the DAG along data-flow edges | `[metadata]` |
-| `step`            | `@capsule_step` / `processing_step` — one-line `processing.json` emission for a capsule  | `[metadata]` |
+| `records`         | `record_step`: each capsule's provenance record, carried downstream | stdlib |
+| `metadata`        | Assemble `processing.json`; author `data_description.json`       | `[metadata]` |
+| `metadata_files`  | Forward `subject.json` etc. verbatim; read `data_description`    | stdlib      |
 
 Core primitives are re-exported at the package level:
 
 ```python
 from aind_code_ocean_pipeline_utils import (
-    GracefulExit, check_shutdown, shutdown_handler,
-    retry_on_oserror, atomic_json_write, atomic_write_text,
-    input_fingerprint, canonical_params,
+    GracefulExit,
+    check_shutdown,
+    shutdown_handler,
+    retry_on_oserror,
+    atomic_json_write,
+    atomic_write_text,
+    input_fingerprint,
+    canonical_params,
     submit_with_context,
-    Role, StreamConfigError,
-    write_stream_configs, find_stream_config,
-    find_worker_manifests, find_launcher_manifest, merge_manifests,
-    log_data_tree, start_memory_reporter,
-    capsule_commit, package_version,
+    Role,
+    StreamConfigError,
+    write_stream_configs,
+    find_stream_config,
+    find_worker_manifests,
+    find_launcher_manifest,
+    merge_manifests,
+    log_data_tree,
+    start_memory_reporter,
+    capsule_commit,
+    package_version,
     parse_truthy,
+    record_step,
+    forward_metadata,
+    read_data_description_fields,
 )
 ```
 
-`log` must be imported from its submodule (keeps the top-level import
-stdlib-only):
+`log` and `metadata` must be imported from their submodules, which keeps the
+top-level import stdlib-only:
 
 ```python
 from aind_code_ocean_pipeline_utils.log import install_rich_handler
+from aind_code_ocean_pipeline_utils.metadata import write_assembled_processing
 ```
 
 ## `process` — graceful shutdown
@@ -79,7 +97,7 @@ from aind_code_ocean_pipeline_utils import check_shutdown, shutdown_handler
 
 with shutdown_handler():
     for shard in shards:
-        check_shutdown()   # raises GracefulExit on SIGINT/SIGTERM
+        check_shutdown()  # raises GracefulExit on SIGINT/SIGTERM
         process(shard)
 ```
 
@@ -92,7 +110,10 @@ path cannot block termination indefinitely.
 
 ```python
 from aind_code_ocean_pipeline_utils import (
-    retry_on_oserror, atomic_json_write, atomic_write_text, TRANSIENT_ERRNOS,
+    retry_on_oserror,
+    atomic_json_write,
+    atomic_write_text,
+    TRANSIENT_ERRNOS,
 )
 
 download = retry_on_oserror(_raw_download, retries=5)
@@ -162,16 +183,22 @@ aggregator Collects and merges per-worker manifests.
 
 ```python
 from aind_code_ocean_pipeline_utils import (
-    Role, StreamConfigError,
-    write_stream_configs, find_stream_config,
-    find_worker_manifests, find_launcher_manifest, merge_manifests,
+    Role,
+    StreamConfigError,
+    write_stream_configs,
+    find_stream_config,
+    find_worker_manifests,
+    find_launcher_manifest,
+    merge_manifests,
 )
 
 MARKER = "_mycapsule_stream_config"
 
 # Launcher
 write_stream_configs(
-    items, results_dir=Path("/results"), schema_marker=MARKER,
+    items,
+    results_dir=Path("/results"),
+    schema_marker=MARKER,
 )
 
 # Worker — finds exactly one staged config anywhere under /data
@@ -194,8 +221,8 @@ terminal for the worker.
 ```python
 from aind_code_ocean_pipeline_utils import log_data_tree, start_memory_reporter
 
-log_data_tree(Path("/data"))           # mount shape visible in log on startup
-reporter = start_memory_reporter()     # daemon thread, logs RSS + cgroup limit
+log_data_tree(Path("/data"))  # mount shape visible in log on startup
+reporter = start_memory_reporter()  # daemon thread, logs RSS + cgroup limit
 # ... worker runs ...
 reporter.stop()
 ```
@@ -213,7 +240,7 @@ from application errors in postmortems.
 from aind_code_ocean_pipeline_utils import capsule_commit, package_version
 
 manifest = {
-    "capsule_commit": capsule_commit(),      # env var, then `git rev-parse HEAD`
+    "capsule_commit": capsule_commit(),  # env var, then `git rev-parse HEAD`
     "package_version": package_version("my-package"),
     # ... pipeline output ...
 }
@@ -255,7 +282,7 @@ from aind_code_ocean_pipeline_utils.log import install_rich_handler
 from rich.progress import Progress
 
 console = install_rich_handler()
-with Progress(console=console) as progress:   # same console!
+with Progress(console=console) as progress:  # same console!
     ...
 ```
 
@@ -270,10 +297,12 @@ log output and progress ticks don't fight:
 
 ```python
 from aind_code_ocean_pipeline_utils.log import (
-    build_progress, install_rich_handler, make_progress_callback,
+    build_progress,
+    install_rich_handler,
+    make_progress_callback,
 )
 
-install_rich_handler()   # must come first
+install_rich_handler()  # must come first
 
 with build_progress(len(items)) as (progress, overall, item):
     for it in items:
@@ -287,118 +316,105 @@ with build_progress(len(items)) as (progress, overall, item):
 been called (unless you pass `console=` explicitly) — keeps the
 shared-`Console` invariant honest.
 
-## `metadata` — aind-data-schema `processing.json` (optional `[metadata]` extra)
+## `records` + `metadata` — provenance and `processing.json`
 
-A Code Ocean pipeline is a Nextflow DAG, but no single capsule sees the whole
-graph. The only place the true edges are knowable with *local* information is
-along the data-flow: a node's inputs **are** its DAG parents. So each node
-builds its `processing.json` from the upstream `processing.json` files handed to
-it (under `/data`), appends its own `DataProcess` wired to the *frontier* of the
-merged upstream graph, and writes the result to `/results`. Fan-in is a graph
-union plus an edge from the new node to each branch's frontier; the terminal
-node holds the complete, correct DAG.
+Every AIND data asset should carry a `processing.json`: the steps that produced it,
+and a `dependency_graph` saying which step fed which. In a Code Ocean pipeline no
+capsule sees the whole graph, but each one sees its inputs, and its inputs are its
+parents. So each capsule that opts in writes a small record of its own step, the
+records travel with the data, and the final capsule assembles them into
+`processing.json`. Capsules that never opt in are still covered wherever they write
+a `processing.json` of their own.
+
+### The final capsule writes `processing.json`
+
+This is the only call a pipeline needs (it requires the `[metadata]` extra):
 
 ```python
-from aind_code_ocean_pipeline_utils.metadata import emit_processing, make_data_process, utcnow
-from aind_code_ocean_pipeline_utils.provenance import capsule_commit, package_version
-from aind_data_schema.core.processing import ProcessName
+from aind_code_ocean_pipeline_utils.metadata import write_assembled_processing
 
-start = utcnow()
-# ... do the work ...
-proc = make_data_process(
-    process_type=ProcessName.IMAGE_ATLAS_ALIGNMENT,
-    name="my-registration-step",            # unique, stable node id
-    code_url="https://github.com/AllenNeuralDynamics/my-capsule",
-    experimenters=["..."],
-    start=start,
-    commit_hash=capsule_commit(),
+write_assembled_processing("/data", "/results")  # -> /results/processing.json
+```
+
+It reads the provenance records under `/data` and `/results` and every upstream
+`processing.json` under `/data`, then writes one validated record whose
+`dependency_graph` is keyed by step name. With no other capsule opted in, it
+rebuilds the graph that upstream capsules wrote themselves.
+
+A step that cannot be recovered in full becomes a placeholder `DataProcess` with a
+`notes` field saying why, so the graph stays connected. That happens when a step is
+named as a parent but left no record, or when it was recorded under a schema
+version the installed aind-data-schema rejects. The call never raises: on failure
+it logs a warning and returns `None`. For the `Processing` object itself, call
+`assemble_processing("/data", "/results")`.
+
+### Opted-in capsules record their own step
+
+```python
+from aind_code_ocean_pipeline_utils import package_version, record_step
+
+with record_step(
+    "mri-registration",  # unique node id in the pipeline
+    process_type="Image atlas alignment",  # an aind-data-schema ProcessName value
     version=package_version("my-package"),
-    output_path="/results/sub-123",
-)
-emit_processing(proc, input_dir="/data", output_dir="/results/sub-123")
+) as step:
+    step.parameters = {"mask_dilate": 4}  # values known only at runtime
+    ...  # the work
 ```
 
-Lower-level pieces (`read_processings`, `append_process`, `write_processing`)
-are available if you need to inspect or merge graphs by hand. Compatible with
-the standard aggregator, which preserves `dependency_graph` from any
-`processing.json` it receives.
+When the block exits cleanly, `record_step` writes
+`/results/provenance/mri-registration.json` next to copies of every upstream
+record. If the block raises, the exception propagates and nothing is written.
+Provenance errors are only logged, so a metadata problem never fails the run.
 
-## `step` — frictionless `processing.json` (optional `[metadata]` extra)
+- Parents are inferred from what arrives in `/data`: provenance records, plus the
+  steps of any upstream `processing.json`. A capsule never names its position in the
+  DAG. Pass `parents=[...]` only to override.
+- Each edge must carry `provenance/`. Records travel in each capsule's
+  `/results/provenance/`, so a Pipeline Builder edge that maps only part of
+  `/results` must include that directory.
+- `process_type` takes a `ProcessName` value such as `"Spike sorting"`. Any
+  other label becomes `Other`, with the label kept in `notes`.
+- `code_url` and `commit_hash` come from the `/code` git checkout and Code Ocean
+  environment variables. `version` is not derived, so pass it.
+- `node` must be unique across the pipeline, so a fan-out worker includes its unit
+  in it, e.g. `f"sort-{probe}"`.
+- The final capsule can record its own step too: call `write_assembled_processing` after its
+  block exits; it reads `/results/provenance/` as well.
 
-**The pain.** Every capsule in a pipeline is expected to emit a
-`processing.json` so the terminal node carries the full provenance DAG. Done by
-hand, that is a surprising amount of fiddly, easy-to-get-wrong work at the *end*
-of every capsule — after the expensive part has already run:
+### A launcher hands its record to fan-out workers
 
-- Build a `DataProcess` against the schema: pick the right `ProcessName` from a
-  closed enum, produce tz-aware timestamps (a naive `datetime` fails
-  validation), and satisfy conditional requirements (e.g. `notes` is mandatory
-  when the type is `OTHER`).
-- Derive the provenance fields — `code_url`, `commit_hash`, `version`,
-  `experimenters` — from the `/code` git checkout, Code Ocean env vars, and
-  upstream metadata, each with its own fallback chain.
-- **Reconstruct the DAG correctly.** Read *every* upstream `processing.json`
-  under `/data`, union their dependency graphs, collapse diamonds, and wire your
-  node to the *frontier* (the current sinks). The stock aggregator instead
-  chains records in filesystem-discovery order — which has nothing to do with
-  the real topology — so the naive path silently produces a *wrong* graph.
-- Forward the ancillary metadata files (`subject.json`, `data_description.json`,
-  …) that must ride the chain, locating them by recursive search because
-  pipeline mounts nest unpredictably.
-- Wrap **all** of it best-effort, because a metadata bug that raises would
-  otherwise throw away a multi-hour run at the finish line.
-
-**The solution.** `step` collapses that entire ceremony to one decorator. On a
-clean return it times the run, builds the `DataProcess`, reads and unions the
-upstream graphs and frontier-appends this node, writes `/results/processing.json`,
-and forwards the ancillary metadata files — all best-effort, so a metadata
-hiccup never sinks the capsule (the wrapped function's *own* exceptions still
-propagate, and a failed step emits nothing).
+A Flatten fan-out gives each worker only its own `stream_<name>/` directory, so a
+worker never sees the launcher's `/results/provenance/`. Pass the launcher's
+records to `write_stream_configs`, which copies them into every stream directory:
 
 ```python
-from aind_code_ocean_pipeline_utils.step import capsule_step
-
-@capsule_step("Skull stripping", name="mri-skull-stripping")
-def run() -> None:
-    ...   # the actual work, unchanged
+with record_step("discover", process_type="Other", run_experimenters=["Jane Doe"]) as step:
+    items = discover_items()
+    write_stream_configs(
+        items,
+        results_dir=Path("/results"),
+        schema_marker=MARKER,
+        provenance=step.fanout_shards(),
+    )
 ```
 
-**The DAG is re-aggregated at every node, incrementally — there is no separate
-aggregation stage.** Each capsule re-reads its upstream `processing.json` files
-and unions their `dependency_graph`s before appending itself, so the merged
-graph grows one node at a time and the terminal node ends up holding the
-complete, correct DAG. Nothing does a global rebuild at the end; the wiring is
-always a local frontier-append.
+Each worker then infers `discover` as its parent. `run_experimenters` is set once,
+here. At assembly it fills every step of this run that names no experimenters of
+its own. A run-level `pipeline={"name": ..., "code": {"url": ...}}` block works the
+same way and fills `Processing.pipelines`.
 
-`process_type` takes a plain human label (a known one coerces to the matching
-`ProcessName`; an unknown one becomes `OTHER` with the label kept as `notes`).
-`name` is the required, explicit DAG node id. `code_url`, `commit_hash`, and
-`experimenters` auto-derive from the `/code` checkout, Code Ocean env vars, and
-the upstream metadata, with explicit overrides; anything underivable degrades to
-`None`/`[]` rather than failing. `version` is *not* derived — pass it explicitly
-(e.g. `version=package_version("my-package")`) or it stays `None`. Pass a
-subject-namespaced `output_dir` for fan-out nodes. For parameters or notes
-computed at runtime, use the `processing_step` context-manager twin:
+### The other metadata files are forwarded or authored
 
-```python
-from aind_code_ocean_pipeline_utils.step import processing_step
+`processing.json` is one file of several. `forward_metadata("/data", "/results")`
+copies `subject.json`, `procedures.json`, `instrument.json`, and `acquisition.json`
+verbatim. The derived asset's own `data_description.json` must be authored rather
+than copied, with `make_derived_data_description` and `write_data_description`, or
+from the schema-agnostic fields that `read_data_description_fields` returns.
 
-with processing_step("Image atlas alignment", name="mri-registration") as step:
-    step.parameters = {"mask_dilate": 4}
-    step.notes = "build5 template"
-    ...   # the work
-```
-
-Because the terminal node's `processing.json` already holds the full DAG, you
-can publish it directly and drop the metadata aggregator entirely.
-
-**Light tax.** `aind-data-schema` is imported *lazily* — only inside the emit
-path, which runs after the wrapped work. So importing `step` and applying
-`@capsule_step` cost nothing schema-related (~35 ms, no `aind-data-schema`),
-the schema load (~80 ms) is paid once at the end of a *successful* run and
-skipped entirely if the work raises early, and a capsule that forgets the
-`[metadata]` extra degrades to a logged no-op instead of an import error at
-startup.
+aind-data-schema is imported only when a step's record is written and at assembly.
+Without the `[metadata]` extra, `record_step` still writes the step's place in the
+graph, and the assembler later turns it into a placeholder.
 
 ## Development
 

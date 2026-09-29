@@ -12,6 +12,7 @@ from aind_code_ocean_pipeline_utils.records import (
     RECORD_VERSION,
     frontier,
     make_record,
+    read_processing_records,
     read_records,
     record_step,
     write_record,
@@ -345,3 +346,174 @@ def test_record_step_empty_experimenters_is_valid(tmp_path: Path):
         pass
     dp = json.loads((out / "provenance" / "A.json").read_text())["data_process"]
     assert dp["experimenters"] == []
+
+
+def test_read_records_payload_beats_stub_with_different_parents(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    # A stale stub disagreeing on parents must not displace the shard carrying the payload.
+    write_record({"v": 1, "node": "L", "parents": []}, tmp_path / "a_stub")
+    write_record({"v": 1, "node": "L", "parents": ["X"], "data_process": {"x": 1}}, tmp_path / "z_full")
+    with caplog.at_level(logging.WARNING):
+        records = read_records(tmp_path)
+    assert records[0]["parents"] == ["X"]
+    assert any("conflicting provenance for node 'L'" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------- read_processing_records --
+
+
+def _v2_processing(*names: str, graph: dict[str, list[str]] | None = None) -> dict:
+    processing: dict = {
+        "schema_version": "2.3.0",
+        "data_processes": [{"name": n, "process_type": "Other", "notes": n} for n in names],
+    }
+    if graph is not None:
+        processing["dependency_graph"] = graph
+    return processing
+
+
+def _write_processing_json(directory: Path, body: dict) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "processing.json").write_text(json.dumps(body))
+
+
+def test_read_processing_records_uses_dependency_graph(tmp_path: Path):
+    _write_processing_json(
+        tmp_path / "asset",
+        _v2_processing("sort", "curate", "qc", graph={"sort": [], "curate": ["sort"], "qc": ["sort"]}),
+    )
+    records = {r["label"]: r for r in read_processing_records(tmp_path)}
+    digest = records["sort"]["node"].split("@")[1]
+    assert records["sort"]["node"] == f"sort@{digest}"
+    assert records["curate"]["parents"] == [f"sort@{digest}"]
+    assert records["qc"]["parents"] == [f"sort@{digest}"]
+    assert records["sort"]["data_process"]["name"] == "sort"  # payload carried verbatim
+    assert records["sort"]["data_process_schema_version"] == "2.3.0"
+    assert frontier(records.values()) == [f"curate@{digest}", f"qc@{digest}"]
+
+
+def test_read_processing_records_chains_a_graphless_v1_file(tmp_path: Path):
+    v1 = {
+        "schema_version": "1.1.3",
+        "processing_pipeline": {
+            "data_processes": [{"name": "Ephys preprocessing"}, {"name": "Spike sorting"}],
+        },
+        "analyses": [{"data_processes": [{"name": "Other"}]}],
+    }
+    _write_processing_json(tmp_path / "asset", v1)
+    records = read_processing_records(tmp_path)
+    assert [r["label"] for r in records] == ["Ephys preprocessing", "Spike sorting", "Other"]
+    assert [r["parents"] for r in records] == [[], [records[0]["node"]], [records[1]["node"]]]
+
+
+def test_read_processing_records_disambiguates_repeated_names_in_one_file(tmp_path: Path):
+    _write_processing_json(tmp_path / "asset", _v2_processing("Other", "Other"))
+    assert [r["label"] for r in read_processing_records(tmp_path)] == ["Other", "Other (2)"]
+
+
+def test_read_processing_records_same_file_twice_yields_same_ids(tmp_path: Path):
+    body = _v2_processing("sort")
+    _write_processing_json(tmp_path / "edge_one", body)
+    _write_processing_json(tmp_path / "edge_two", body)
+    nodes = [r["node"] for r in read_processing_records(tmp_path)]
+    assert len(nodes) == 2
+    assert nodes[0] == nodes[1]
+
+
+def test_read_processing_records_distinct_files_do_not_collide(tmp_path: Path):
+    first, second = _v2_processing("sort"), _v2_processing("sort")
+    second["data_processes"][0]["notes"] = "another session"
+    _write_processing_json(tmp_path / "session_a", first)
+    _write_processing_json(tmp_path / "session_b", second)
+    records = read_processing_records(tmp_path)
+    assert {r["label"] for r in records} == {"sort"}
+    assert len({r["node"] for r in records}) == 2
+
+
+def test_read_processing_records_skips_file_beside_shards(tmp_path: Path):
+    _write_processing_json(tmp_path / "asset", _v2_processing("sort"))
+    write_record(make_record("sort"), tmp_path / "asset")
+    assert read_processing_records(tmp_path) == []
+
+
+def test_read_processing_records_skips_unreadable_and_bounds_depth(tmp_path: Path):
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "processing.json").write_text("{not json")
+    _write_processing_json(tmp_path / "list", {"data_processes": "nope"})
+    _write_processing_json(tmp_path / "a" / "b" / "c", _v2_processing("too-deep"))
+    assert read_processing_records(tmp_path) == []
+
+
+def test_read_processing_records_carries_pipeline_block(tmp_path: Path):
+    body = _v2_processing("sort")
+    body["data_processes"][0]["pipeline_name"] = "ephys"
+    body["pipelines"] = [{"name": "ephys", "url": "https://example.com/pipeline"}]
+    _write_processing_json(tmp_path / "asset", body)
+    (record,) = read_processing_records(tmp_path)
+    assert record["pipeline"] == {"name": "ephys", "code": body["pipelines"][0]}
+
+
+# ------------------------------------------- record_step: upstream and fan-out --
+
+
+def test_record_step_attaches_to_upstream_processing_json(tmp_path: Path):
+    # A capsule that only writes processing.json still becomes this node's parent.
+    incoming = tmp_path / "data"
+    _write_processing_json(
+        incoming / "sorted", _v2_processing("sort", "curate", graph={"sort": [], "curate": ["sort"]})
+    )
+    out = tmp_path / "out"
+    with record_step("B", process_type="Other", incoming_dir=incoming, output_dir=out) as step:
+        pass
+    (curate,) = step.parents
+    assert curate.startswith("curate@")
+    shard = json.loads((out / "provenance" / "B.json").read_text())
+    assert shard["parents"] == [curate]
+    # The converted steps travel on as shards, so later nodes need not see the file.
+    assert {r.get("label") for r in read_records(out)} == {"sort", "curate", None}
+
+
+def test_record_step_read_processing_false_ignores_processing_json(tmp_path: Path):
+    incoming = tmp_path / "data"
+    _write_processing_json(incoming / "sorted", _v2_processing("sort"))
+    with record_step(
+        "B", process_type="Other", incoming_dir=incoming, output_dir=tmp_path / "out", read_processing=False
+    ) as step:
+        pass
+    assert step.parents == ()
+
+
+def test_record_step_resolves_parents_before_the_body(tmp_path: Path):
+    out_a = tmp_path / "a"
+    with record_step("A", process_type="Other", incoming_dir=tmp_path / "empty", output_dir=out_a):
+        pass
+    with record_step("B", process_type="Other", incoming_dir=out_a, output_dir=tmp_path / "b") as step:
+        assert step.node == "B"
+        assert step.parents == ("A",)
+
+
+def test_fanout_shards_carry_parents_and_upstream(tmp_path: Path):
+    # X -> L (launcher, fans out) -> W (worker). The worker must see L as its parent
+    # and receive X, and L's stub must agree with L's full shard.
+    out_x = tmp_path / "x"
+    with record_step("X", process_type="Other", incoming_dir=tmp_path / "empty", output_dir=out_x):
+        pass
+    out_l = tmp_path / "l"
+    with record_step(
+        "L", process_type="Other", incoming_dir=out_x, output_dir=out_l, run_experimenters=["Ada"]
+    ) as step:
+        shards = step.fanout_shards()
+        for shard in shards:
+            write_record(shard, out_l / "stream_s1")
+    stub = shards[-1]
+    assert stub == {"v": 1, "node": "L", "parents": ["X"], "experimenters": ["Ada"]}
+    assert [s["node"] for s in shards] == ["X", "L"]
+
+    full = json.loads((out_l / "provenance" / "L.json").read_text())
+    assert full["parents"] == ["X"]  # the stub in out_l/stream_s1 did not erase the parent
+    assert full["experimenters"] == ["Ada"]
+
+    out_w = tmp_path / "w"
+    with record_step("W", process_type="Other", incoming_dir=out_l / "stream_s1", output_dir=out_w) as worker:
+        pass
+    assert worker.parents == ("L",)
+    assert {r["node"] for r in read_records(out_w)} == {"X", "L", "W"}

@@ -24,17 +24,23 @@ node's own ``DataProcess`` on write (the ``[metadata]`` extra); if it is absent 
 authoring fails, the envelope is still written with ``data_process`` omitted, so
 the DAG topology always survives.
 
-Why this and not a ``processing.json`` frontier-append: the removed approach
-merged *parsed current-schema* ``Processing`` objects, which only works if every
-capsule agrees on one aind-data-schema version — a constraint that does not hold as
-capsules drift and the schema itself relocates. Here the frontier algorithm runs
-over trivial envelopes; no schema is in the hot path. Assembling a compliant
-``Processing`` from a directory of shards is deferred to an optional, best-effort
-step (see :mod:`.metadata`) run only when a stable target is actually required.
+Upstream capsules that do not use this library but write an aind-data-schema
+``processing.json`` still join the DAG: :func:`read_processing_records` turns each
+such file into envelopes by reading only its raw ``name`` / ``dependency_graph``
+keys, carrying each ``DataProcess`` forward as an opaque payload.
+
+Why this and not a ``processing.json`` frontier-append: merging *parsed
+current-schema* ``Processing`` objects only works if every capsule agrees on one
+aind-data-schema version — a constraint that does not hold as capsules drift and
+the schema itself relocates. Here the frontier algorithm runs over trivial
+envelopes; no schema is in the hot path. Schema parsing happens once, at the node
+that builds the final ``processing.json``
+(:func:`aind_code_ocean_pipeline_utils.metadata.assemble_processing`).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -55,6 +61,7 @@ __all__ = [
     "RecordContext",
     "frontier",
     "make_record",
+    "read_processing_records",
     "read_records",
     "record_step",
     "write_record",
@@ -87,6 +94,7 @@ def make_record(
     data_process_schema_version: str | None = None,
     pipeline: Mapping[str, Any] | None = None,
     experimenters: Sequence[str] | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
     """Build a provenance envelope (pure; no I/O, no aind-data-schema).
 
@@ -111,6 +119,10 @@ def make_record(
     experimenters : Sequence[str], optional
         Run-level default responsible people; launcher-owned. Per-node
         experimenters live inside ``data_process``, not here.
+    label : str, optional
+        Display name for the assembled ``DataProcess.name`` when it differs from
+        ``node``. Set on records read from a ``processing.json``, whose node ids carry
+        a content digest so identically named steps from different files stay distinct.
 
     Returns
     -------
@@ -130,6 +142,8 @@ def make_record(
         record["pipeline"] = dict(pipeline)
     if experimenters is not None:
         record["experimenters"] = list(experimenters)
+    if label is not None:
+        record["label"] = label
     return record
 
 
@@ -219,8 +233,8 @@ def read_records(
             depth = len(Path(dirpath).relative_to(base).parts)
         except ValueError:
             depth = 0
-        if depth >= max_depth:
-            dirnames[:] = []
+        # Sorted so first-seen order, and with it parent order and dedup, is reproducible.
+        dirnames[:] = [] if depth >= max_depth else sorted(dirnames)
         if os.path.basename(dirpath) != provenance_dir:
             continue
         for filename in sorted(filenames):
@@ -244,11 +258,7 @@ def read_records(
             chosen, conflict = _reconcile(existing, parsed)
             by_node[node] = chosen
             if conflict:
-                _logger.warning(
-                    "conflicting provenance for node %r (keeping first); duplicate at %s",
-                    node,
-                    path,
-                )
+                _logger.warning("conflicting provenance for node %r; duplicate at %s", node, path)
     return list(by_node.values())
 
 
@@ -261,8 +271,9 @@ def _reconcile(existing: dict[str, Any], incoming: dict[str, Any]) -> tuple[dict
     :func:`aind_code_ocean_pipeline_utils.role_dispatch.write_stream_configs`) be
     superseded by the full shard (with the authored ``data_process`` payload) that
     rides the node's direct edge — no spurious conflict where both reach the
-    terminal. Records that differ on a shared key are a genuine collision: keep the
-    first and flag it.
+    terminal. Otherwise a record carrying a ``data_process`` payload beats one
+    without, since the payload is what assembly cannot recover; failing that, the
+    first is kept. Either way, records that differ on a shared key are flagged.
 
     Returns
     -------
@@ -276,7 +287,9 @@ def _reconcile(existing: dict[str, Any], incoming: dict[str, Any]) -> tuple[dict
         return incoming, False  # incoming is a richer superset
     if ek >= ik and all(existing[k] == incoming[k] for k in ik):
         return existing, False  # existing is a richer superset
-    return existing, True  # genuine conflict
+    if "data_process" in incoming and "data_process" not in existing:
+        return incoming, True
+    return existing, True
 
 
 def frontier(records: Iterable[Mapping[str, Any]]) -> list[str]:
@@ -310,19 +323,168 @@ def frontier(records: Iterable[Mapping[str, Any]]) -> list[str]:
     return [node for node in nodes if node not in referenced]
 
 
+#: Standard aind-data-schema filename that :func:`read_processing_records` converts.
+_PROCESSING_FILENAME = "processing.json"
+
+
+def _nonempty_str(value: object) -> str | None:
+    """Return ``value`` if it is a non-empty string, else ``None``."""
+    return value if isinstance(value, str) and value else None
+
+
+def _processes_in(raw: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Return the raw ``DataProcess`` dicts of a ``processing.json`` of any schema version."""
+    found: list[Any] = []
+    if isinstance(raw.get("data_processes"), list):
+        found = list(raw["data_processes"])
+    else:  # aind-data-schema 1.x: processes live under the pipeline and each analysis
+        pipeline = raw.get("processing_pipeline")
+        if isinstance(pipeline, Mapping) and isinstance(pipeline.get("data_processes"), list):
+            found.extend(pipeline["data_processes"])
+        for analysis in raw.get("analyses") or []:
+            if isinstance(analysis, Mapping) and isinstance(analysis.get("data_processes"), list):
+                found.extend(analysis["data_processes"])
+    return [process for process in found if isinstance(process, Mapping)]
+
+
+def _records_from_processing(raw: Mapping[str, Any], digest: str) -> list[dict[str, Any]]:
+    """Convert one parsed ``processing.json`` into envelopes keyed ``<name>@<digest>``."""
+    processes = _processes_in(raw)
+    names: list[str] = []
+    uses: dict[str, int] = {}
+    for process in processes:
+        base = _nonempty_str(process.get("name")) or _nonempty_str(process.get("process_type")) or "process"
+        uses[base] = uses.get(base, 0) + 1
+        # A graph-less file may repeat a name; a graph-bearing one cannot (the schema forbids it).
+        names.append(base if uses[base] == 1 else f"{base} ({uses[base]})")
+
+    graph = raw.get("dependency_graph") if isinstance(raw.get("dependency_graph"), Mapping) else None
+    known = set(names)
+    pipelines = {
+        name: dict(pipeline)
+        for pipeline in raw.get("pipelines") or []
+        if isinstance(pipeline, Mapping) and (name := _nonempty_str(pipeline.get("name")))
+    }
+    schema_version = _nonempty_str(raw.get("schema_version"))
+
+    records: list[dict[str, Any]] = []
+    for index, (name, process) in enumerate(zip(names, processes, strict=True)):
+        if graph is not None:
+            parent_names = [p for p in graph.get(name) or [] if isinstance(p, str) and p in known]
+        else:
+            parent_names = names[index - 1 : index]
+        pipeline_name = _nonempty_str(process.get("pipeline_name"))
+        pipeline = {"name": pipeline_name, "code": pipelines[pipeline_name]} if pipeline_name in pipelines else None
+        records.append(
+            make_record(
+                f"{name}@{digest}",
+                parents=[f"{p}@{digest}" for p in parent_names],
+                data_process=process,
+                data_process_schema_version=schema_version,
+                pipeline=pipeline,
+                label=name,
+            )
+        )
+    return records
+
+
+def read_processing_records(
+    root: str | Path,
+    *,
+    max_depth: int = 2,
+    provenance_dir: str = _PROVENANCE_DIR,
+) -> list[dict[str, Any]]:
+    """Convert the ``processing.json`` files under ``root`` into envelopes (schema-free).
+
+    This is how a capsule that writes an aind-data-schema ``processing.json`` but
+    never calls :func:`record_step` joins the DAG. Each file is read as a raw dict:
+    every ``DataProcess`` in it becomes one envelope carrying that process verbatim as
+    its payload, with ``parents`` taken from the file's ``dependency_graph``, or from
+    list order when it has none (aind-data-schema 1.x). Nothing is validated, so a
+    file of any schema version converts; a payload the assembler cannot validate
+    becomes a placeholder there.
+
+    Node ids are ``<name>@<digest>``, the digest taken over the file's content, so one
+    file reached along two edges yields the same ids while two files that each name a
+    step ``"Spike sorting"`` stay distinct. ``label`` keeps the bare name.
+
+    A ``processing.json`` beside a ``provenance_dir`` directory is skipped, because the
+    shards there already describe its steps.
+
+    Parameters
+    ----------
+    root : str or pathlib.Path
+        Directory to scan (e.g. ``/data``).
+    max_depth : int, default 2
+        Maximum directory depth (relative to ``root``) to descend;
+        ``<root>/<asset>/processing.json`` sits at depth 1.
+    provenance_dir : str, default ``"provenance"``
+        Shard directory whose presence supersedes a sibling ``processing.json``.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Envelopes, possibly empty. Unreadable or unrecognized files are skipped.
+    """
+    base = Path(root)
+    records: list[dict[str, Any]] = []
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
+        has_shards = provenance_dir in dirnames
+        try:
+            depth = len(Path(dirpath).relative_to(base).parts)
+        except ValueError:
+            depth = 0
+        dirnames[:] = [] if depth >= max_depth else sorted(dirnames)
+        if _PROCESSING_FILENAME not in filenames or has_shards:
+            continue
+        path = Path(dirpath) / _PROCESSING_FILENAME
+        try:
+            raw = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            _logger.debug("skipping unreadable %s: %s", path, exc)
+            continue
+        if not isinstance(raw, dict):
+            continue
+        digest = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
+        records.extend(_records_from_processing(raw, digest))
+    return records
+
+
 @dataclass
 class RecordContext:
-    """Mutable handle yielded by :func:`record_step` for runtime details.
+    """Mutable handle yielded by :func:`record_step`.
 
-    Values set before the ``with`` block exits are folded into the authored
-    ``DataProcess``. ``parameters`` set here are merged over any passed to
-    :func:`record_step` (context wins on key clashes).
+    Set ``parameters`` / ``notes`` / ``output_path`` / ``experimenters`` before the
+    ``with`` block exits to fold them into the authored ``DataProcess``;
+    ``parameters`` merge over any passed to :func:`record_step` (context wins on key
+    clashes). ``node`` and ``parents`` are resolved when the block starts, and
+    :meth:`fanout_shards` hands them to a fan-out.
     """
 
     parameters: dict[str, Any] = field(default_factory=dict)
     notes: str | None = None
     output_path: str | Path | None = None
     experimenters: list[str] | None = None
+    node: str = field(default="", init=False)
+    parents: tuple[str, ...] = field(default=(), init=False)
+    _upstream: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
+    _envelope_extras: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+
+    def fanout_shards(self) -> list[dict[str, Any]]:
+        """Return the shards a fan-out unit needs to wire its worker to this node.
+
+        Pass the result to ``write_stream_configs(provenance=...)``. It holds every
+        upstream shard plus a payload-less stub of this node with the same
+        ``parents``, so a worker infers this node as its parent and the stub is
+        superseded wherever this node's full shard also arrives.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Upstream shards followed by this node's stub.
+        """
+        stub = make_record(self.node, parents=self.parents, **self._envelope_extras)
+        return [*self._upstream, stub]
 
 
 def _author_payload(
@@ -340,6 +502,7 @@ def _author_payload(
     parameters: Mapping[str, Any] | None,
     output_path: str | Path | None,
     notes: str | None,
+    pipeline_name: str | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Build this node's ``DataProcess`` payload, best-effort; never raises.
 
@@ -382,12 +545,34 @@ def _author_payload(
             parameters=dict(parameters) if parameters else None,
             output_path=str(output_path) if output_path is not None else None,
             notes=notes or label,
+            pipeline_name=pipeline_name,
         )
         payload: dict[str, Any] = proc.model_dump(mode="json")
         return payload, package_version("aind-data-schema")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- authoring is best-effort
         _logger.warning("data_process authoring failed for node %r: %s", node, exc)
         return None, None
+
+
+def _gather_upstream(
+    node: str,
+    *,
+    incoming_dir: str | Path,
+    output_dir: str | Path,
+    read_processing: bool,
+) -> list[dict[str, Any]]:
+    """Collect the shards this node descends from, excluding any shard of ``node`` itself.
+
+    Reads the edge inputs and this node's own ``output_dir``. The latter makes a
+    monolith (several steps in one process, sharing ``output_dir``) chain correctly:
+    step N sees step N-1's just-written shard. A same-node shard (a launcher's own
+    fan-out stub, or a monolith re-run) is dropped so it can neither become a parent
+    nor be propagated over the fresh one.
+    """
+    found = [*read_records(incoming_dir), *read_records(output_dir)]
+    if read_processing:
+        found.extend(read_processing_records(incoming_dir))
+    return [record for record in _dedup_records(found) if record.get("node") != node]
 
 
 def _finalize_record(
@@ -395,9 +580,7 @@ def _finalize_record(
     node: str,
     process_type: str,
     stage: str,
-    incoming_dir: str | Path,
     output_dir: str | Path,
-    parents: Sequence[str] | None,
     experimenters: Sequence[str] | None,
     code_url: str | None,
     code_dir: str,
@@ -405,16 +588,16 @@ def _finalize_record(
     commit_hash: str | None,
     parameters: Mapping[str, Any] | None,
     notes: str | None,
-    pipeline: Mapping[str, Any] | None,
     ctx: RecordContext,
     start: datetime,
 ) -> Path:
-    """Build the shard: infer parents, propagate upstream shards, write this node's shard."""
+    """Write this node's shard and forward copies of the upstream shards."""
     end = _utcnow()
     merged_params: dict[str, Any] = {**(dict(parameters) if parameters else {}), **ctx.parameters}
     resolved_notes = ctx.notes if ctx.notes is not None else notes
     resolved_output = ctx.output_path if ctx.output_path is not None else output_dir
     resolved_exps = ctx.experimenters if ctx.experimenters is not None else experimenters
+    pipeline = ctx._envelope_extras.get("pipeline")
 
     data_process, schema_version = _author_payload(
         node=node,
@@ -430,39 +613,22 @@ def _finalize_record(
         parameters=merged_params or None,
         output_path=resolved_output,
         notes=resolved_notes,
+        pipeline_name=_nonempty_str(pipeline.get("name")) if pipeline else None,
     )
-
-    # Union of edge inputs and this node's own output dir. The latter makes a
-    # monolith (several steps in one process, sharing output_dir) chain correctly:
-    # step N sees step N-1's just-written shard. First-seen wins on overlap.
-    incoming = _dedup_records([*read_records(incoming_dir), *read_records(output_dir)])
-    resolved_parents = list(parents) if parents is not None else frontier(incoming)
-    # A node is never its own parent. A launcher's fan-out stubs (written into this
-    # node's own output_dir by write_stream_configs) and a monolith re-run both put
-    # a same-node shard in the scanned set, so frontier would otherwise return self;
-    # an explicit parents= list could also name it by mistake. Drop it either way --
-    # the propagation loop below already excludes the same-node shard.
-    resolved_parents = [p for p in resolved_parents if p != node]
-
     record = make_record(
         node,
-        parents=resolved_parents,
+        parents=ctx.parents,
         data_process=data_process,
         data_process_schema_version=schema_version,
-        pipeline=pipeline,
+        **ctx._envelope_extras,
     )
-
-    # Propagate every ancestor shard forward, then write our own (last, so a
-    # monolith re-run overwrites the prior copy harmlessly).
-    for upstream in incoming:
-        if upstream.get("node") == node:
-            continue
+    for upstream in ctx._upstream:
         write_record(upstream, output_dir)
     return write_record(record, output_dir)
 
 
 def _dedup_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate by ``node`` (superset supersedes), dropping node-less records."""
+    """Deduplicate by ``node`` (see :func:`_reconcile`), dropping node-less records."""
     out: dict[str, dict[str, Any]] = {}
     for record in records:
         node = record.get("node")
@@ -484,6 +650,7 @@ def record_step(
     output_dir: str | Path = "/results",
     parents: Sequence[str] | None = None,
     experimenters: Sequence[str] | None = None,
+    run_experimenters: Sequence[str] | None = None,
     code_url: str | None = None,
     code_dir: str = "/code",
     version: str | None = None,
@@ -491,31 +658,34 @@ def record_step(
     parameters: Mapping[str, Any] | None = None,
     notes: str | None = None,
     pipeline: Mapping[str, Any] | None = None,
+    read_processing: bool = True,
 ) -> Generator[RecordContext, None, None]:
     """Context manager that writes a provenance shard when the block succeeds.
 
-    Yields a :class:`RecordContext` for ``parameters`` / ``notes`` /
-    ``output_path`` / ``experimenters`` discovered at runtime. On a clean exit the
-    step is timed, its ``DataProcess`` authored (best-effort), parents inferred, and
-    the shard written to ``<output_dir>/provenance/`` alongside forwarded copies of
-    every incoming ancestor shard. If the block raises, the exception propagates and
-    **nothing is written** — a failed step leaves no record. The emit itself is
-    best-effort and never raises.
+    When the block starts, the upstream shards are read and ``parents`` resolved;
+    both are exposed on the yielded :class:`RecordContext`. On a clean exit the step
+    is timed, its ``DataProcess`` authored (best-effort), and its shard written to
+    ``<output_dir>/provenance/`` alongside forwarded copies of every upstream shard.
+    If the block raises, the exception propagates and **nothing is written** — a
+    failed step leaves no record. Reading and writing provenance is best-effort and
+    never raises.
 
     Parents are inferred (``parents=None``, the default) as the frontier of the
-    shards arriving on edges plus any already in ``output_dir`` (topology-free — the
-    capsule never hardcodes its DAG position). Pass ``parents`` explicitly to
-    override — for an ambiguous frontier, an unwired/test context, or a fan-out
-    worker not fed via ``write_stream_configs(producer_record=...)``.
+    upstream shards: those arriving on edges, those already in ``output_dir``, and,
+    with ``read_processing``, the steps of any upstream ``processing.json`` (see
+    :func:`read_processing_records`). The capsule never hardcodes its DAG position.
+    Pass ``parents`` explicitly to override — for an ambiguous frontier or an
+    unwired/test context. A node is never its own parent.
 
     Parameters
     ----------
     node : str
-        Unique node id (also the ``DataProcess.name``).
+        Unique node id (also the ``DataProcess.name``). Fan-out workers must
+        include their unit in it.
     process_type : str
         aind-data-schema ``ProcessName`` value; an unknown label becomes ``OTHER``
-        with the label preserved as ``notes``. Ignored if the ``[metadata]`` extra
-        is absent (the payload is simply omitted).
+        with the label kept as ``notes`` unless notes are given. Ignored if the
+        ``[metadata]`` extra is absent (the payload is simply omitted).
     stage : str, default ``"Processing"``
         aind-data-schema ``ProcessStage`` value.
     incoming_dir : str or pathlib.Path, default ``"/data"``
@@ -525,28 +695,50 @@ def record_step(
     parents : Sequence[str], optional
         Explicit parent node ids; overrides frontier inference.
     experimenters : Sequence[str], optional
-        People responsible; folded into the authored ``DataProcess``.
+        People responsible for this step; folded into its ``DataProcess``.
+    run_experimenters : Sequence[str], optional
+        People responsible for the whole run, recorded on the envelope. Assembly
+        fills them into every step that names none. Set it once, at the launcher.
     code_url : str, optional
         Repository URL override; auto-derived from git/env otherwise.
     code_dir : str, default ``"/code"``
         Git checkout used to derive ``code_url`` / ``commit_hash``.
     version : str, optional
-        Code version stamp.
+        Code version stamp (e.g. ``package_version("my-package")``). Not derived.
     commit_hash : str, optional
         Git commit override; auto-derived otherwise. A value failing the schema's
         hash pattern is dropped.
     parameters : Mapping[str, Any], optional
         Static run parameters; merged under any set on the context.
     notes : str, optional
-        Free-text notes; a context value or an ``OTHER`` label takes precedence.
+        Free-text notes; a value set on the context takes precedence.
     pipeline : Mapping[str, Any], optional
-        Run-level pipeline block to record in the envelope (launcher).
+        Run-level pipeline block ``{"name": ..., "code": {...}}`` (launcher). Stamps
+        this step's ``pipeline_name``; assembly adds ``code`` to ``Processing.pipelines``.
+    read_processing : bool, default True
+        Also read upstream ``processing.json`` files, so capsules that do not use
+        this library still appear as parents.
 
     Yields
     ------
     RecordContext
     """
     ctx = RecordContext()
+    ctx.node = node
+    extras: dict[str, Any] = {}
+    if pipeline is not None:
+        extras["pipeline"] = dict(pipeline)
+    if run_experimenters is not None:
+        extras["experimenters"] = list(run_experimenters)
+    ctx._envelope_extras = extras
+    try:
+        ctx._upstream = _gather_upstream(
+            node, incoming_dir=incoming_dir, output_dir=output_dir, read_processing=read_processing
+        )
+    except Exception as exc:  # noqa: BLE001 -- provenance must never sink the run
+        _logger.warning("could not read upstream provenance for node %r: %s", node, exc)
+    resolved = list(parents) if parents is not None else frontier(ctx._upstream)
+    ctx.parents = tuple(p for p in resolved if p != node)
     start = _utcnow()
     yield ctx
     try:
@@ -554,9 +746,7 @@ def record_step(
             node=node,
             process_type=process_type,
             stage=stage,
-            incoming_dir=incoming_dir,
             output_dir=output_dir,
-            parents=parents,
             experimenters=experimenters,
             code_url=code_url,
             code_dir=code_dir,
@@ -564,9 +754,8 @@ def record_step(
             commit_hash=commit_hash,
             parameters=parameters,
             notes=notes,
-            pipeline=pipeline,
             ctx=ctx,
             start=start,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- provenance must never sink the run
         _logger.warning("provenance emit failed for node %r: %s", node, exc)

@@ -79,6 +79,7 @@ These are load-bearing — every module has a subtle bug it exists to prevent. D
 - `cache.input_fingerprint` requires JSON-serializable input and raises `TypeError` on anything else. Callers coerce `Path → str`, `ndarray → list`, etc. at the call site. Return value is prefixed `sha256:` so the algorithm can change without breaking string comparisons.
 - `threading_utils.submit_with_context` calls `copy_context()` **per submit**, not once shared across submits. A shared Context raises `RuntimeError` when active on two threads concurrently (bit `ecephys-mipmap-zarr` at `prefetch_chunks >= 2`).
 - `log.install_rich_handler` returns the `Console` object so the caller can pass the same one to `rich.progress.Progress(console=...)`. Not sharing it is what causes `logger.exception` inside `with Progress():` to lose its traceback tail.
+- `records` never parses a payload on read: routing touches only `node` / `parents` (and raw `name` / `dependency_graph` keys of an upstream `processing.json`), so schema drift cannot break the DAG. `metadata.assemble_processing` is the one place payloads are validated, and a step it cannot validate becomes a placeholder rather than an error. `record_step` resolves `parents` when the block starts, excluding its own node, so a launcher's fan-out stubs in its own `output_dir` cannot change them.
 
 ### Target consumers
 

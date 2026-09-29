@@ -112,6 +112,7 @@ def write_stream_configs(
     name_key: str = "name",
     dir_prefix: str = "stream_",
     sanitize: Callable[[str], str] = default_sanitize,
+    provenance: Iterable[Mapping[str, Any]] | None = None,
     producer_record: Mapping[str, Any] | None = None,
 ) -> list[Path]:
     """Launcher side: write one config JSON per item, schema-tagged.
@@ -120,17 +121,16 @@ def write_stream_configs(
     containing the full item mapping plus ``{schema_marker: schema_version}``
     so workers can recognize it among nested staged inputs.
 
-    Fan-out breadcrumb (``producer_record``)
-    ----------------------------------------
+    Fan-out provenance (``provenance``)
+    -----------------------------------
     A Flatten fan-out *distributes* per-item slices; it does not *broadcast* the
     launcher's shared ``provenance/``, so a fanned worker never receives the
-    launcher's shard and cannot infer it as a parent. Passing ``producer_record``
-    side-writes the launcher's provenance shard into **each** per-item directory as
-    ``<dir_prefix><safe>/provenance/<node>.json`` — a separate file, leaving
-    ``config.json`` (the work-item contract) untouched. Flatten then delivers it
-    per-unit, and the worker infers ``parents`` by frontier exactly like a linear
-    node (no ``parents=`` override needed). See
-    :func:`aind_code_ocean_pipeline_utils.records.record_step`.
+    launcher's shard and cannot infer it as a parent. Passing
+    ``provenance=step.fanout_shards()`` (from the launcher's
+    :func:`aind_code_ocean_pipeline_utils.records.record_step` block) writes those
+    shards into **each** per-item directory under ``<dir_prefix><safe>/provenance/``,
+    leaving ``config.json`` (the work-item contract) untouched. Flatten delivers them
+    per unit, and the worker infers ``parents`` by frontier exactly like a linear node.
 
     Parameters
     ----------
@@ -152,10 +152,14 @@ def write_stream_configs(
         Prefix on each per-item subdirectory.
     sanitize : callable, default :func:`default_sanitize`
         Transform applied to the name before use as a directory.
+    provenance : Iterable[Mapping[str, Any]], optional
+        Provenance shards to write into every per-item ``provenance/`` subdir,
+        normally ``step.fanout_shards()``. A shard with no non-empty ``node`` is
+        skipped with a warning.
     producer_record : Mapping[str, Any], optional
-        The launcher's provenance shard (see :func:`make_record`). When given, it
-        is side-written into every per-item ``provenance/`` subdir. A record with no
-        non-empty ``node`` is skipped with a warning.
+        A single shard to write alongside ``provenance``. Kept for callers that
+        build the launcher's stub by hand; prefer ``provenance``, which also carries
+        the launcher's parents and upstream shards.
 
     Returns
     -------
@@ -170,13 +174,13 @@ def write_stream_configs(
     base = Path(results_dir)
     base.mkdir(parents=True, exist_ok=True)
 
-    producer_node: str | None = None
-    if producer_record is not None:
-        node = producer_record.get("node")
+    shards: list[dict[str, Any]] = []
+    for shard in [*(provenance or ()), *([producer_record] if producer_record is not None else [])]:
+        node = shard.get("node")
         if isinstance(node, str) and node:
-            producer_node = node
+            shards.append(dict(shard))
         else:
-            _logger.warning("producer_record has no 'node'; skipping provenance side-write")
+            _logger.warning("provenance shard has no 'node'; skipping fan-out side-write")
 
     written: list[Path] = []
     for item in items:
@@ -193,10 +197,12 @@ def write_stream_configs(
         written.append(cfg_path)
         _logger.info("wrote stream config: %s", cfg_path)
 
-        if producer_node is not None and producer_record is not None:
+        if shards:
             prov_dir = stream_dir / "provenance"
             prov_dir.mkdir(parents=True, exist_ok=True)
-            atomic_json_write(prov_dir / f"{sanitize(producer_node)}.json", dict(producer_record))
+            for shard in shards:
+                # Same filename rule as records.write_record, so the two never disagree.
+                atomic_json_write(prov_dir / f"{default_sanitize(shard['node'])}.json", shard)
     return written
 
 

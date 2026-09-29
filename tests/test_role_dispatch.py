@@ -171,6 +171,27 @@ def test_write_stream_configs_skips_nodeless_producer_record(tmp_path: Path, cap
     assert any("no 'node'" in m for m in caplog.messages)
 
 
+def test_write_stream_configs_writes_every_provenance_shard(tmp_path: Path, caplog):
+    import logging
+
+    shards = [
+        {"v": 1, "node": "upstream", "parents": []},
+        {"v": 1, "node": "discover", "parents": ["upstream"]},
+        {"v": 1, "parents": []},  # no 'node'
+    ]
+    with caplog.at_level(logging.WARNING):
+        write_stream_configs(
+            [{"name": "unitA"}],
+            results_dir=tmp_path,
+            schema_marker=SCHEMA_MARKER,
+            provenance=shards,
+        )
+    prov = tmp_path / "stream_unitA" / "provenance"
+    assert sorted(p.name for p in prov.iterdir()) == ["discover.json", "upstream.json"]
+    assert json.loads((prov / "discover.json").read_text()) == shards[1]
+    assert any("no 'node'" in m for m in caplog.messages)
+
+
 def test_write_stream_configs_no_producer_record_writes_no_provenance(tmp_path: Path):
     write_stream_configs([{"name": "unitA"}], results_dir=tmp_path, schema_marker=SCHEMA_MARKER)
     assert not (tmp_path / "stream_unitA" / "provenance").exists()

@@ -43,7 +43,7 @@ __all__ = [
 
 #: Semantic version of the envelope contract. Independent of the package version.
 #: Minor/patch = additive; major matches the wire ``v`` and the ``v<major>`` dir.
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 #: Location of the checked-in artifact, relative to the package root. Used by both
 #: the loader (:func:`record_schema`) and ``scripts/export_record_schema.py``.
@@ -129,6 +129,14 @@ def build_record_schema() -> dict[str, Any]:
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Run-level default responsible people; launcher-owned.",
+            },
+            "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Display name for the assembled DataProcess.name when it differs from 'node'; "
+                    "set on records converted from a processing.json."
+                ),
             },
         },
     }

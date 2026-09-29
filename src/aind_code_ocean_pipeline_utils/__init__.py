@@ -2,13 +2,14 @@
 
 Core primitives are re-exported at the package level, including the schema-free
 provenance breadcrumb layer from :mod:`.records` (``record_step``, ``make_record``,
-``read_records``, ``frontier``, ``write_record``). The rich-aware helpers in
+``read_records``, ``read_processing_records``, ``frontier``, ``write_record``). The rich-aware helpers in
 :mod:`.log` (``install_rich_handler``, ``build_progress``) require the optional
 ``[rich]`` extra and must be imported explicitly; :func:`attach_file_log` is
-stdlib-only and re-exported here. The :mod:`.metadata` authoring helpers
-(``make_data_process`` / ``write_processing``) require the optional ``[metadata]``
-extra (``aind-data-schema``) and are import-only; ``record_step`` uses them
-lazily and best-effort to author a shard's opaque ``DataProcess`` payload.
+stdlib-only and re-exported here. The :mod:`.metadata` helpers
+(``assemble_processing`` / ``write_assembled_processing`` / ``make_data_process``)
+require the optional ``[metadata]`` extra (``aind-data-schema``) and must be imported
+from their submodule; ``record_step`` uses them lazily and best-effort to author a
+shard's opaque ``DataProcess`` payload.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -43,6 +44,7 @@ from .records import (
     RecordContext,
     frontier,
     make_record,
+    read_processing_records,
     read_records,
     record_step,
     write_record,
@@ -96,6 +98,7 @@ __all__ = [
     "package_version",
     "parse_truthy",
     "read_data_description_fields",
+    "read_processing_records",
     "read_records",
     "record_step",
     "reset_shutdown_state",
