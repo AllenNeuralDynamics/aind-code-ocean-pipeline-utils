@@ -118,6 +118,7 @@ def test_read_fields_extracts_stable_primitives_ignoring_old_schema(tmp_path: Pa
         "subject_id": "791094",
         "project_name": "Brain Computer Interface",
         "investigator_names": ["Jane Doe", "John Roe"],
+        "modality_abbreviations": ["ecephys"],
     }
 
 
@@ -133,9 +134,20 @@ def test_read_fields_investigators_may_be_bare_strings():
     assert fields["investigator_names"] == ["Ada", "Bo"]
 
 
+def test_read_fields_modalities_skip_entries_without_an_abbreviation():
+    fields = read_data_description_fields({"modalities": [{"abbreviation": "SPIM"}, {"name": "x"}, "ecephys"]})
+    assert fields["modality_abbreviations"] == ["SPIM"]
+
+
 def test_read_fields_missing_or_unreadable_source_is_empty(tmp_path: Path):
     missing = read_data_description_fields(tmp_path / "nope.json")
-    assert missing == {"name": None, "subject_id": None, "project_name": None, "investigator_names": []}
+    assert missing == {
+        "name": None,
+        "subject_id": None,
+        "project_name": None,
+        "investigator_names": [],
+        "modality_abbreviations": [],
+    }
     (tmp_path / "bad.json").write_text("{ not json")
     assert read_data_description_fields(tmp_path / "bad.json")["subject_id"] is None
     # A non-object JSON body (e.g. a list) yields empty fields, never raises.

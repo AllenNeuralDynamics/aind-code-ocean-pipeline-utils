@@ -143,8 +143,10 @@ fills every step of the run that names none, and a
 `instrument.json`, and `acquisition.json` verbatim, or `rig.json` and `session.json`,
 their names before schema v2. The derived asset's
 `data_description.json` describes a new asset, so it is authored instead, with
-`metadata.make_derived_data_description` or from the fields
-`read_data_description_fields` extracts from any schema version.
+`metadata.make_derived_data_description(parent, process_name, fallback=...)`. A
+parent that does not validate under the installed aind-data-schema is rebuilt from
+the fields `read_data_description_fields` extracts from any schema version, with
+`fallback` supplying what it lacks (typically `institution` and `funding_source`).
 
 ### Commit and version stamps
 

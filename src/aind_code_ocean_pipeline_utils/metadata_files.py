@@ -80,9 +80,10 @@ def read_data_description_fields(source: str | Path | Mapping[str, Any]) -> dict
     Returns
     -------
     dict[str, Any]
-        ``{"name", "subject_id", "project_name", "investigator_names"}``. Each is
-        ``None`` when absent/unreadable, except ``investigator_names`` which is a
-        (possibly empty) list of the string ``name`` of each investigator entry.
+        ``{"name", "subject_id", "project_name", "investigator_names",
+        "modality_abbreviations"}``. Each is ``None`` when absent/unreadable, except
+        the two lists, which hold the string ``name`` of each investigator and the
+        ``abbreviation`` of each modality (``modalities``, or ``modality`` before v1).
     """
     raw: Any
     if isinstance(source, Mapping):
@@ -102,11 +103,18 @@ def read_data_description_fields(source: str | Path | Mapping[str, Any]) -> dict
         if name:
             investigators.append(name)
 
+    modalities: list[str] = []
+    for entry in raw.get("modalities") or raw.get("modality") or []:
+        abbreviation = _stable_str(entry.get("abbreviation")) if isinstance(entry, Mapping) else None
+        if abbreviation:
+            modalities.append(abbreviation)
+
     return {
         "name": _stable_str(raw.get("name")),
         "subject_id": _stable_str(raw.get("subject_id")),
         "project_name": _stable_str(raw.get("project_name")),
         "investigator_names": investigators,
+        "modality_abbreviations": modalities,
     }
 
 

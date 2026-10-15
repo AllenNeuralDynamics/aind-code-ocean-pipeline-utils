@@ -108,6 +108,80 @@ def test_make_derived_data_description_accepts_dict_parent():
     assert derived.source_data == ["asset-A"]
 
 
+FALLBACK = {"institution": Organization.AIND, "funding_source": [Funding(funder=Organization.AI)]}
+
+# A pre-v2 record: institution and modality shapes the current schema rejects.
+OLD_PARENT = {
+    "name": "ecephys_791094_2025-10-08_16-48-57",
+    "data_level": "raw data",
+    "subject_id": "791094",
+    "project_name": "Brain Computer Interface",
+    "modality": [{"name": "Extracellular electrophysiology", "abbreviation": "ecephys"}],
+    "platform": {"abbreviation": "ecephys"},
+    "institution": {"abbreviation": "ROR", "registry_name": "Research Organization Registry"},
+    "investigators": [{"name": "Jane Doe", "abbreviation": None}],
+    "schema_version": "0.10.0",
+}
+
+
+def test_make_derived_data_description_rebuilds_an_invalid_parent(tmp_path):
+    path = tmp_path / "data_description.json"
+    path.write_text(json.dumps(OLD_PARENT))
+    derived = make_derived_data_description(path, "sorted", fallback=FALLBACK)
+    assert derived.name.startswith("ecephys_791094_2025-10-08_16-48-57_sorted_")
+    assert derived.data_level == DataLevel.DERIVED
+    assert derived.subject_id == "791094"
+    assert [p.name for p in derived.investigators] == ["Jane Doe"]
+    assert [m.abbreviation for m in derived.modalities] == ["ecephys"]
+    assert derived.institution == Organization.AIND  # from fallback
+    assert derived.source_data == [OLD_PARENT["name"]]
+
+
+def test_rebuild_names_after_the_root_raw_asset_of_a_derived_parent():
+    parent = {**OLD_PARENT, "name": "ecephys_791094_2025-10-08_16-48-57_sorted_2025-10-09_01-02-03"}
+    derived = make_derived_data_description(parent, "curated", fallback=FALLBACK)
+    assert derived.name.startswith("ecephys_791094_2025-10-08_16-48-57_curated_")
+    assert derived.source_data == [parent["name"]]
+
+
+def test_rebuild_prefers_parent_then_overrides_over_fallback():
+    fallback = {**FALLBACK, "subject_id": "000000", "investigators": [Person(name="unknown")]}
+    derived = make_derived_data_description(
+        OLD_PARENT, "sorted", fallback=fallback, project_name="Override", source_data=["a", "b"]
+    )
+    assert derived.subject_id == "791094"
+    assert [p.name for p in derived.investigators] == ["Jane Doe"]
+    assert derived.project_name == "Override"
+    assert derived.source_data == ["a", "b"]
+
+
+def test_rebuild_fills_missing_parent_fields_from_fallback():
+    parent = {"name": OLD_PARENT["name"], "investigators": []}
+    fallback = {
+        **FALLBACK,
+        "subject_id": "791094",
+        "project_name": "P",
+        "investigators": [Person(name="unknown")],
+        "modalities": [Modality.ECEPHYS],
+    }
+    derived = make_derived_data_description(parent, "sorted", fallback=fallback)
+    assert [p.name for p in derived.investigators] == ["unknown"]
+    assert derived.subject_id == "791094"
+
+
+def test_rebuild_without_required_fields_raises():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        make_derived_data_description(OLD_PARENT, "sorted")
+
+
+def test_valid_parent_ignores_fallback():
+    parent = raw_dd().model_dump(mode="json")
+    derived = make_derived_data_description(parent, "sorted", fallback={"project_name": "ignored"})
+    assert derived.project_name == "Example project"
+
+
 def test_write_data_description_round_trip(tmp_path):
     derived = make_derived_data_description(raw_dd(), "ibl-preprocess")
     path = write_data_description(derived, tmp_path / "out")

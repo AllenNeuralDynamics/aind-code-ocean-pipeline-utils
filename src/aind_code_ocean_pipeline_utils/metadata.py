@@ -24,7 +24,9 @@ schema side:
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import warnings
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -451,32 +453,39 @@ def write_assembled_processing(
 
 
 def make_derived_data_description(
-    parent: DataDescription | Mapping[str, Any],
+    parent: DataDescription | Mapping[str, Any] | str | Path,
     process_name: str,
     *,
     source_data: Sequence[str] | None = None,
+    fallback: Mapping[str, Any] | None = None,
     **overrides: Any,
 ) -> DataDescription:
     """Derive a ``DataLevel.DERIVED`` :class:`DataDescription` from a parent asset.
 
-    Thin wrapper over ``DataDescription.from_data_description`` (which picks
-    ``from_raw`` / ``from_derived`` by the parent's ``data_level``). The parent's
-    institution, funding, investigators, project name, modalities, and subject id
-    are inherited; ``data_level`` becomes ``DERIVED`` and a derived name is
-    generated. This is the one metadata file to **author** for the produced asset
-    rather than forward — forwarding the parent's would misdescribe a different
-    asset.
+    The parent's institution, funding, investigators, project name, modalities, and
+    subject id are inherited; ``data_level`` becomes ``DERIVED`` and the name becomes
+    ``<root raw name>_<process_name>_<UTC time>``.
+
+    A parent that does not validate under the installed aind-data-schema (an older
+    schema, or a record missing required fields) is not an error. Its version-stable
+    fields (see :func:`~aind_code_ocean_pipeline_utils.metadata_files.read_data_description_fields`)
+    are read raw, the gaps are filled from ``overrides`` then ``fallback``, and the
+    derivation runs on a fresh RAW parent named after the root raw asset, so a
+    derived parent's name does not chain.
 
     Parameters
     ----------
-    parent : DataDescription or Mapping[str, Any]
-        The input asset's data description, as an object or a parsed dict (validated
-        here). Validating an older-schema parent may raise; callers on an emit path
-        should treat this best-effort.
+    parent : DataDescription, Mapping[str, Any], str, or pathlib.Path
+        The input asset's data description: an object, a parsed dict, or a path to
+        its ``data_description.json``.
     process_name : str
         Name of the process that produced the derived asset (folded into the name).
     source_data : Sequence[str], optional
         Source asset name(s). Defaults to the parent's own name.
+    fallback : Mapping[str, Any], optional
+        ``DataDescription`` fields used only when rebuilding an invalid parent, and
+        only where the parent has no usable value; e.g. ``institution``,
+        ``funding_source``, or a placeholder ``investigators``.
     **overrides
         Any ``DataDescription`` field to override on the derived record.
 
@@ -484,16 +493,92 @@ def make_derived_data_description(
     -------
     DataDescription
         A ``DERIVED`` data description.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If even the rebuilt parent lacks a required field; pass it in ``fallback``.
     """
     from aind_data_schema.core.data_description import DataDescription
+    from pydantic import ValidationError
 
-    parent_dd = parent if isinstance(parent, DataDescription) else DataDescription.model_validate(dict(parent))
-    return DataDescription.from_data_description(
-        parent_dd,
-        process_name,
-        source_data=list(source_data) if source_data else None,
-        **overrides,
-    )
+    if isinstance(parent, DataDescription):
+        return _derive(parent, process_name, source_data, overrides)
+    raw = _load_raw(parent)
+    try:
+        return _derive(DataDescription.model_validate(raw), process_name, source_data, overrides)
+    except (ValidationError, ValueError) as exc:
+        _logger.warning(
+            "cannot derive from the parent data_description as-is; rebuilding from its stable fields: %s", exc
+        )
+    rebuilt = _rebuild_raw_parent(raw, fallback or {}, overrides)
+    original_name = raw.get("name") if isinstance(raw.get("name"), str) else None
+    if source_data is None and original_name:
+        source_data = [original_name]
+    return _derive(rebuilt, process_name, source_data, overrides)
+
+
+# Set on the rebuilt parent itself, or consumed by the derivation; never copied in.
+_NOT_REBUILT = frozenset({"name", "data_level", "creation_time", "source_data", "object_type", "schema_version"})
+
+
+def _derive(
+    parent: DataDescription, process_name: str, source_data: Sequence[str] | None, overrides: Mapping[str, Any]
+) -> DataDescription:
+    try:
+        from aind_data_schema.utils.inheritance import derive_data_description
+    except ImportError:  # aind-data-schema < 2.9
+        from aind_data_schema.core.data_description import DataDescription
+
+        derive_data_description = DataDescription.from_data_description
+    return derive_data_description(parent, process_name, list(source_data) if source_data else None, **overrides)
+
+
+def _load_raw(parent: Mapping[str, Any] | str | Path) -> dict[str, Any]:
+    if isinstance(parent, Mapping):
+        return dict(parent)
+    loaded = json.loads(Path(parent).read_text())
+    if not isinstance(loaded, dict):
+        raise TypeError(f"{parent} does not hold a JSON object")
+    return loaded
+
+
+def _root_asset_name(name: str) -> str:
+    """Return the raw asset a derived name traces back to, or ``name`` if it is not derived."""
+    from aind_data_schema_models.data_name_patterns import DataRegex
+
+    match = re.match(DataRegex.DERIVED.value, name)
+    return match.group("input") if match else name
+
+
+def _rebuild_raw_parent(
+    raw: Mapping[str, Any], fallback: Mapping[str, Any], overrides: Mapping[str, Any]
+) -> DataDescription:
+    from aind_data_schema.components.identifiers import Person
+    from aind_data_schema.core.data_description import DataDescription
+    from aind_data_schema_models.data_name_patterns import DataLevel
+    from aind_data_schema_models.modalities import Modality
+
+    from .metadata_files import read_data_description_fields
+
+    stable = read_data_description_fields(raw)
+    modalities = []
+    for abbreviation in stable["modality_abbreviations"]:
+        try:
+            modalities.append(Modality.from_abbreviation(abbreviation))
+        except (KeyError, ValueError, AttributeError):
+            _logger.warning("unknown modality %r in parent data_description; dropped", abbreviation)
+    recovered = {
+        "subject_id": stable["subject_id"],
+        "project_name": stable["project_name"],
+        "investigators": [Person(name=name) for name in stable["investigator_names"]],
+        "modalities": modalities,
+    }
+    fields: dict[str, Any] = {k: v for k, v in fallback.items() if k not in _NOT_REBUILT}
+    fields.update({k: v for k, v in recovered.items() if v})
+    fields.update({k: v for k, v in overrides.items() if k not in _NOT_REBUILT and v is not None})
+    root = _root_asset_name(stable["name"]) if stable["name"] else None
+    return DataDescription(data_level=DataLevel.RAW, name=root, creation_time=utcnow(), **fields)
 
 
 def write_data_description(data_description: DataDescription, output_dir: str | Path) -> Path:
