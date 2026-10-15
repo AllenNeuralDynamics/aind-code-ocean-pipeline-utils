@@ -54,12 +54,20 @@ def test_forward_metadata_copies_present_skips_absent(tmp_path: Path):
     src = tmp_path / "in"
     _write(src / "asset" / "subject.json", {"subject_id": "42"})
     _write(src / "asset" / "procedures.json")
-    # instrument.json and acquisition.json intentionally absent.
+    # instrument/acquisition and their pre-v2 names intentionally absent.
     out = tmp_path / "out"
     written = forward_metadata(src, out)
     names = {p.name for p in written}
     assert names == {"subject.json", "procedures.json"}
     assert json.loads((out / "subject.json").read_text())["subject_id"] == "42"
+
+
+def test_forward_metadata_forwards_pre_v2_names(tmp_path: Path):
+    src = tmp_path / "in"
+    for name in ("subject.json", "procedures.json", "rig.json", "session.json"):
+        _write(src / "asset" / name)
+    written = forward_metadata(src, tmp_path / "out")
+    assert {p.name for p in written} == {"subject.json", "procedures.json", "rig.json", "session.json"}
 
 
 def test_forward_metadata_verbatim_copy(tmp_path: Path):

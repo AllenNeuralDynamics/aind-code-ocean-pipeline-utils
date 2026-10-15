@@ -1,7 +1,8 @@
 """Locate and forward AIND metadata sidecar files (bounded, stdlib-only).
 
 A derived data asset must carry the ancillary metadata of its inputs —
-``subject``, ``procedures``, ``instrument``, ``acquisition`` — forwarded
+``subject``, ``procedures``, ``instrument``, ``acquisition`` (``rig`` and
+``session`` before schema v2) — forwarded
 **verbatim** (a derived asset inherits, unchanged, the subject/procedures/etc. of
 what it was made from). This is deliberately *not* a provenance concern (it does
 not touch the breadcrumb DAG) and deliberately *not* schema-coupled (a byte-copy
@@ -47,6 +48,9 @@ DEFAULT_INHERITED_METADATA: tuple[str, ...] = (
     "procedures.json",
     "instrument.json",
     "acquisition.json",
+    # Pre-v2 names of instrument and acquisition; a v1 input carries only these.
+    "rig.json",
+    "session.json",
 )
 
 

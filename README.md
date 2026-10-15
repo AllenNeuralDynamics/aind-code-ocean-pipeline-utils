@@ -140,7 +140,8 @@ fills every step of the run that names none, and a
 ### The other metadata files are forwarded or authored
 
 `forward_metadata("/data", "/results")` copies `subject.json`, `procedures.json`,
-`instrument.json`, and `acquisition.json` verbatim. The derived asset's
+`instrument.json`, and `acquisition.json` verbatim, or `rig.json` and `session.json`,
+their names before schema v2. The derived asset's
 `data_description.json` describes a new asset, so it is authored instead, with
 `metadata.make_derived_data_description` or from the fields
 `read_data_description_fields` extracts from any schema version.
