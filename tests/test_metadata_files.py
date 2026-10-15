@@ -6,9 +6,12 @@ import json
 from pathlib import Path
 
 from aind_code_ocean_pipeline_utils.metadata_files import (
+    DEFAULT_ARCHIVE_DIR,
     DEFAULT_INHERITED_METADATA,
+    InheritedMetadata,
     find_metadata_file,
     forward_metadata,
+    inherit_metadata,
     read_data_description_fields,
 )
 
@@ -153,3 +156,109 @@ def test_read_fields_missing_or_unreadable_source_is_empty(tmp_path: Path):
     # A non-object JSON body (e.g. a list) yields empty fields, never raises.
     (tmp_path / "list.json").write_text("[1, 2, 3]")
     assert read_data_description_fields(tmp_path / "list.json")["name"] is None
+
+
+# --------------------------------------------------------------- inherit_metadata --
+
+
+def _source(root: Path, mount: str, subject: str, raw: str, files: tuple[str, ...] = DEFAULT_INHERITED_METADATA[:4]):
+    for name in files:
+        _write(
+            root / mount / name, {"subject_id": subject, "from": mount} if name == "subject.json" else {"from": mount}
+        )
+    _write(root / mount / "data_description.json", {"name": raw, "subject_id": subject})
+    return root / mount
+
+
+RAW_A = "ecephys_100_2025-01-01_00-00-00"
+RAW_B = "ecephys_200_2025-02-02_00-00-00"
+
+
+def _from(path: Path) -> str:
+    return json.loads(path.read_text())["from"]
+
+
+def test_inherit_archives_every_source_and_roots_one(tmp_path: Path):
+    sources = [_source(tmp_path / "data", m, s, r) for m, s, r in (("b", "200", RAW_B), ("a", "100", RAW_A))]
+    out = tmp_path / "results"
+    result = inherit_metadata(sources, out)
+    assert result.sources == ["a", "b"]
+    assert result.root_source == "a"
+    for key in ("a", "b"):
+        assert {p.name for p in (out / DEFAULT_ARCHIVE_DIR / key).iterdir()} == {
+            *DEFAULT_INHERITED_METADATA[:4],
+            "data_description.json",
+        }
+    assert {_from(p) for p in result.root} == {"a"}  # every root file from one source
+    assert not (out / "data_description.json").exists()
+
+
+def test_inherit_roots_the_most_complete_source(tmp_path: Path):
+    sparse = _source(tmp_path, "a", "100", RAW_A, files=("subject.json",))
+    full = _source(tmp_path, "b", "100", RAW_A)
+    result = inherit_metadata([sparse, full], tmp_path / "out")
+    assert result.root_source == "b"
+
+
+def test_drop_omits_subject_and_acquisition_files_across_subjects(tmp_path: Path):
+    sources = [_source(tmp_path, "a", "100", RAW_A), _source(tmp_path, "b", "200", RAW_B)]
+    result = inherit_metadata(sources, tmp_path / "out", root="drop")
+    assert result.root == []
+    assert len(list((tmp_path / "out" / DEFAULT_ARCHIVE_DIR).iterdir())) == 2
+
+
+def test_drop_keeps_subject_files_for_one_subject_over_two_acquisitions(tmp_path: Path):
+    other_session = "ecephys_100_2025-03-03_00-00-00"
+    sources = [_source(tmp_path, "a", "100", RAW_A), _source(tmp_path, "b", "100", other_session)]
+    result = inherit_metadata(sources, tmp_path / "out", root="drop")
+    assert {p.name for p in result.root} == {"subject.json", "procedures.json"}
+
+
+def test_drop_keeps_everything_for_derived_assets_of_one_acquisition(tmp_path: Path):
+    sources = [
+        _source(tmp_path, "probe1", "100", f"{RAW_A}_sorted_2025-01-02_00-00-00"),
+        _source(tmp_path, "probe2", "100", f"{RAW_A}_sorted_2025-01-03_00-00-00"),
+    ]
+    result = inherit_metadata(sources, tmp_path / "out", root="drop")
+    assert {p.name for p in result.root} == set(DEFAULT_INHERITED_METADATA[:4])
+
+
+def test_inherit_carries_an_upstream_archive_without_its_root_copies(tmp_path: Path):
+    sources = [_source(tmp_path / "data", "a", "100", RAW_A), _source(tmp_path / "data", "b", "200", RAW_B)]
+    upstream = tmp_path / "node1"
+    inherit_metadata(sources, upstream)
+    _write(upstream / "data_description.json", {"name": f"{RAW_A}_sorted_2025-01-02_00-00-00"})
+    result = inherit_metadata([upstream], tmp_path / "node2")
+    assert result.sources == ["a", "b"]
+    assert result.root_source == "a"
+
+
+def test_inherit_skips_reference_assets_without_inherited_files(tmp_path: Path):
+    _write(tmp_path / "ccf" / "data_description.json", {"name": "ccf"})
+    ancestor = _source(tmp_path, "a", "100", RAW_A)
+    result = inherit_metadata([tmp_path / "ccf", ancestor], tmp_path / "out")
+    assert result.sources == ["a"]
+
+
+def test_inherit_with_no_sources_writes_nothing(tmp_path: Path):
+    result = inherit_metadata([tmp_path / "missing"], tmp_path / "out")
+    assert result == InheritedMetadata(sources=[], root=[], root_source=None)
+    assert not (tmp_path / "out").exists()
+
+
+def test_find_metadata_file_walks_in_sorted_order(tmp_path: Path):
+    for d in ("zz", "aa", "mm"):
+        _write(tmp_path / d / "subject.json")
+    assert find_metadata_file(tmp_path, "subject.json") == tmp_path / "aa" / "subject.json"
+
+
+def test_archive_is_not_read_as_provenance_shards(tmp_path: Path):
+    from aind_code_ocean_pipeline_utils.records import read_records
+
+    ancestor = tmp_path / "data" / "a"
+    _write(ancestor / "subject.json", {"node": "looks-like-a-shard", "subject_id": "100"})
+    _write(ancestor / "data_description.json", {"name": RAW_A})
+    _write(tmp_path / "results" / "provenance" / "step.json", {"node": "step"})
+    inherit_metadata([ancestor], tmp_path / "results")
+    assert (tmp_path / "results" / "provenance" / "metadata" / "a" / "subject.json").exists()
+    assert [r["node"] for r in read_records(tmp_path / "results")] == ["step"]

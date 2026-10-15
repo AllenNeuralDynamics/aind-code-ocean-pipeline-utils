@@ -25,9 +25,12 @@ from .io import (
 )
 from .log import attach_file_log
 from .metadata_files import (
+    DEFAULT_ARCHIVE_DIR,
     DEFAULT_INHERITED_METADATA,
+    InheritedMetadata,
     find_metadata_file,
     forward_metadata,
+    inherit_metadata,
     read_data_description_fields,
 )
 from .process import (
@@ -67,10 +70,12 @@ except PackageNotFoundError:
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "DEFAULT_ARCHIVE_DIR",
     "DEFAULT_INHERITED_METADATA",
     "RECORD_VERSION",
     "TRANSIENT_ERRNOS",
     "GracefulExit",
+    "InheritedMetadata",
     "MemoryReporter",
     "RecordContext",
     "Role",
@@ -89,6 +94,7 @@ __all__ = [
     "find_worker_manifests",
     "forward_metadata",
     "frontier",
+    "inherit_metadata",
     "input_fingerprint",
     "install_shutdown_handlers",
     "is_shutdown_requested",

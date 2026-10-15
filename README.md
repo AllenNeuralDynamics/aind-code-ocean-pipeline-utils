@@ -57,7 +57,7 @@ write_assembled_processing("/data", "/results")  # in the pipeline's final capsu
 | [write a pipeline's `processing.json`](#the-final-capsule-writes-processingjson) | `metadata.write_assembled_processing` |
 | [record this capsule's step](#opted-in-capsules-record-their-own-step) | `record_step` |
 | [carry provenance across a fan-out](#a-launcher-hands-its-record-to-fan-out-workers) | `step.fanout_shards()` |
-| [copy or author the other metadata files](#the-other-metadata-files-are-forwarded-or-authored) | `forward_metadata`, `metadata.make_derived_data_description` |
+| [copy or author the other metadata files](#the-other-metadata-files-are-forwarded-or-authored) | `inherit_metadata`, `metadata.make_derived_data_description` |
 | [stamp a commit or package version](#commit-and-version-stamps) | `capsule_commit`, `package_version` |
 | [fan work out and merge the results](#launcher-workers-aggregator) | `write_stream_configs`, `find_stream_config`, `merge_manifests` |
 | [read a boolean App Panel parameter](#app-panel-parameters) | `parse_truthy` |
@@ -139,9 +139,19 @@ fills every step of the run that names none, and a
 
 ### The other metadata files are forwarded or authored
 
-`forward_metadata("/data", "/results")` copies `subject.json`, `procedures.json`,
+`inherit_metadata(sources, "/results")` copies `subject.json`, `procedures.json`,
 `instrument.json`, and `acquisition.json` verbatim, or `rig.json` and `session.json`,
-their names before schema v2. The derived asset's
+their names before schema v2. Pass the ancestor mounts as `sources`, not all of
+`/data`, which also holds reference assets. Every source's files, with its
+`data_description.json`, land in `provenance/metadata/<mount>/`, so they travel on
+the edges that carry `/results/provenance/`, and an upstream node's archive is
+carried forward. The root gets one source's complete set, so
+DocDB sees a consistent record. `root="drop"` instead leaves out the subject files
+when sources span subjects and the acquisition files when they span acquisitions,
+following aind-data-schema's inheritance rules.
+`forward_metadata(src, dst)` copies first matches, to lift files between directories.
+
+The derived asset's
 `data_description.json` describes a new asset, so it is authored instead, with
 `metadata.make_derived_data_description(parent, process_name, fallback=...)`. A
 parent that does not validate under the installed aind-data-schema is rebuilt from
