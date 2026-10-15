@@ -269,7 +269,8 @@ def inherit_metadata(
     already holds an archive (an upstream node's output) contributes its archived
     entries instead of its own root copies, so the archive accumulates across a
     pipeline without duplicates. Sources are explicit because ``/data`` also holds
-    reference assets (atlases, templates) that are not ancestors.
+    reference assets (atlases, templates) that are not ancestors, so every source is
+    archived with whatever it holds, even only a ``data_description.json``.
 
     The root takes every file from a single archived source, so its files always
     agree: the one with the most of ``names``, ties broken by key. Under
@@ -307,7 +308,7 @@ def inherit_metadata(
     entries: dict[str, dict[str, Path]] = {}
     for source in map(Path, sources):
         for key, found in _source_entries(source, [*wanted, _DATA_DESCRIPTION], archive_dir, max_depth):
-            if key in entries or not any(name in found for name in wanted):
+            if key in entries or not found:
                 continue
             copied = {name: dst for name, src in found.items() if (dst := _copy(src, archive / key / name))}
             if copied:
@@ -317,7 +318,7 @@ def inherit_metadata(
     if not keys:
         return InheritedMetadata(sources=[], root=[], root_source=None)
     counts = {k: sum(name in entries[k] for name in wanted) for k in keys}
-    chosen = next(k for k in keys if counts[k] == max(counts.values()))
+    chosen = next((k for k in keys if counts[k] == max(counts.values()) > 0), None)
     omit: set[str] = set()
     if root == "drop" and len(keys) > 1:
         if not _single(_subject_id(entries[k]) for k in keys):
@@ -331,7 +332,7 @@ def inherit_metadata(
     written = [
         dst
         for name in wanted
-        if name in entries[chosen] and name not in omit
+        if chosen is not None and name in entries[chosen] and name not in omit
         if (dst := _copy(entries[chosen][name], Path(output_dir) / name))
     ]
     return InheritedMetadata(sources=keys, root=written, root_source=chosen)

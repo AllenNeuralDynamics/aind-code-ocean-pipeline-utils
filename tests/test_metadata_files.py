@@ -233,11 +233,19 @@ def test_inherit_carries_an_upstream_archive_without_its_root_copies(tmp_path: P
     assert result.root_source == "a"
 
 
-def test_inherit_skips_reference_assets_without_inherited_files(tmp_path: Path):
-    _write(tmp_path / "ccf" / "data_description.json", {"name": "ccf"})
+def test_inherit_archives_a_source_holding_only_a_data_description(tmp_path: Path):
+    _write(tmp_path / "sparse" / "data_description.json", {"name": RAW_A, "subject_id": "100"})
     ancestor = _source(tmp_path, "a", "100", RAW_A)
-    result = inherit_metadata([tmp_path / "ccf", ancestor], tmp_path / "out")
-    assert result.sources == ["a"]
+    result = inherit_metadata([tmp_path / "sparse", ancestor], tmp_path / "out")
+    assert result.sources == ["a", "sparse"]
+    assert (tmp_path / "out" / DEFAULT_ARCHIVE_DIR / "sparse" / "data_description.json").exists()
+    assert result.root_source == "a"
+
+
+def test_inherit_roots_nothing_when_no_source_has_inherited_files(tmp_path: Path):
+    _write(tmp_path / "sparse" / "data_description.json", {"name": RAW_A})
+    result = inherit_metadata([tmp_path / "sparse"], tmp_path / "out")
+    assert result == InheritedMetadata(sources=["sparse"], root=[], root_source=None)
 
 
 def test_inherit_with_no_sources_writes_nothing(tmp_path: Path):
