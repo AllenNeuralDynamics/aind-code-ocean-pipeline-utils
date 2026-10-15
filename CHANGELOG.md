@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **io**: add retry_on_oserror and atomic writes
 - **process**: add graceful shutdown module
 
+## v0.8.0 (2026-10-15)
+
+### Feat
+
+- archive every input's metadata and choose the root by policy
+- derive data descriptions from parents that do not validate
+
+### Fix
+
+- forward pre-v2 rig.json and session.json by default
+
 ## v0.7.1 (2026-09-29)
 
 ### Fix
