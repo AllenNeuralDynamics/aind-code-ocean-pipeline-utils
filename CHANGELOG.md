@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **io**: add retry_on_oserror and atomic writes
 - **process**: add graceful shutdown module
 
+## v0.9.0 (2026-10-24)
+
+### Feat
+
+- add stage timings and machine facts for benchmarking capsule runs
+
 ## v0.8.1 (2026-10-15)
 
 ### Fix
