@@ -67,6 +67,7 @@ write_assembled_processing("/data", "/results")  # in the pipeline's final capsu
 | [keep `contextvars` in thread-pool workers](#context-across-thread-pools) | `submit_with_context` |
 | [log under progress bars, keep a log file](#logging-under-progress-bars) | `log.install_rich_handler`, `log.build_progress`, `attach_file_log` |
 | [see the mounts and memory use](#mounts-and-memory) | `log_data_tree`, `start_memory_reporter` |
+| [time a run's stages and record the machine](#stage-timings) | `StageProfile`, `machine_info` |
 
 Everything imports from `aind_code_ocean_pipeline_utils` except the `log.` and
 `metadata.` names, which live in submodules so the package root needs neither extra.
@@ -279,6 +280,29 @@ reporter.stop()
 `log_data_tree` follows Code Ocean's symlinked mounts to a bounded depth. An OOM
 kill runs no `except` block and flushes no output, so the reporter's last line is
 what tells an OOM apart from a spot reclamation afterwards.
+
+### Stage timings
+
+```python
+profile = StageProfile()  # gathers machine_info() now
+with profile.stage("decode") as extra:
+    n_bytes = decode_all()
+    extra["mb_s"] = n_bytes / 1e6 / ...
+with profile.stage("build"):
+    build()
+profile.write(Path("/results/profile.json"), extra={"config": params})
+```
+
+Each stage records wall time, CPU time (all threads, plus subprocesses it waited
+for), `cores_busy`, and peak memory. `cores_busy` well under the CPU count means the
+stage waits on I/O or a lock rather than running out of cores. Peak memory is the
+process high-water mark so far, so it only grows across stages.
+
+The report carries `machine_info()`: CPU count and affinity, cgroup CPU and memory
+limits, Code Ocean's `CO_CPUS` / `CO_MEMORY`, the CPU model and the EC2 instance
+type. The machine can change in the Code Ocean UI between runs, and nothing else in
+a run records which one it got. `peak_rss_gb()` reads `VmHWM`, which starts fresh
+in each process, where `ru_maxrss` is inherited across `fork` and `execve`.
 
 ## Development
 

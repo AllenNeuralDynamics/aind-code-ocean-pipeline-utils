@@ -41,6 +41,7 @@ from .process import (
     reset_shutdown_state,
     shutdown_handler,
 )
+from .profiling import StageProfile, machine_info, peak_rss_gb
 from .provenance import capsule_commit, package_version
 from .records import (
     RECORD_VERSION,
@@ -79,6 +80,7 @@ __all__ = [
     "MemoryReporter",
     "RecordContext",
     "Role",
+    "StageProfile",
     "StreamConfigError",
     "__version__",
     "atomic_json_write",
@@ -99,10 +101,12 @@ __all__ = [
     "install_shutdown_handlers",
     "is_shutdown_requested",
     "log_data_tree",
+    "machine_info",
     "make_record",
     "merge_manifests",
     "package_version",
     "parse_truthy",
+    "peak_rss_gb",
     "read_data_description_fields",
     "read_processing_records",
     "read_records",
